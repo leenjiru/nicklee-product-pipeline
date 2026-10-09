@@ -92,7 +92,7 @@ function memory(ctx: Ctx): { ram: number | null; storage: number | null } {
 const fmtGb = (gb: number) => (gb >= 1024 ? `${gb / 1024}TB` : `${gb}GB`)
 
 // ---- chipset tiers (rough, but ordered correctly across brands) ----
-export function chipsetScore(chipset: string): number | null {
+function chipsetTier(chipset: string): number | null {
   const s = chipset.toLowerCase()
   let m: RegExpMatchArray | null
   if ((m = s.match(/apple a(\d+)/))) { const a = Number(m[1]); return a >= 19 ? 99 : a >= 18 ? 97 : a >= 17 ? 95 : a >= 16 ? 90 : a >= 15 ? 85 : a >= 14 ? 78 : a >= 13 ? 72 : 60 }
@@ -120,6 +120,33 @@ export function chipsetScore(chipset: string): number | null {
   if (/kirin\s*9/.test(s)) return 85; if (/kirin\s*8/.test(s)) return 60; if (/kirin/.test(s)) return 48
   if (/unisoc|spreadtrum|tiger|\bt[67]\d\d\b/.test(s)) return 20
   return null
+}
+
+/**
+ * Approximate AnTuTu-v11-class scores in thousands of points, compiled from public benchmark reports
+ * (Apple chips are aligned to Geekbench rather than raw AnTuTu, which isn't comparable across iOS/Android).
+ * Most specific patterns first. These are estimates meant for ranking, not exact figures.
+ */
+const CHIP_BENCHMARKS: [RegExp, number][] = [
+  [/apple a19 pro/, 3400], [/apple a19/, 3000], [/apple a18 pro/, 2700], [/apple a18/, 2500], [/apple a17 pro/, 2100], [/apple a16/, 1750], [/apple a15/, 1500], [/apple a14/, 1250], [/apple a13/, 1000], [/apple a12/, 800],
+  [/snapdragon 8 elite gen 5|sm8850/, 3900], [/snapdragon 8 elite|sm8750/, 3000], [/snapdragon 8s gen 4/, 2000], [/snapdragon 8 gen 3|sm8650/, 2150], [/snapdragon 8s gen 3/, 1650], [/snapdragon 8 gen 2|sm8550/, 1750], [/snapdragon 8\+ gen 1/, 1450], [/snapdragon 8 gen 1|sm8450/, 1350], [/snapdragon 888/, 1100], [/snapdragon 870/, 900], [/snapdragon 865/, 800],
+  [/snapdragon 7\+ gen 3/, 1450], [/snapdragon 7s gen 3/, 900], [/snapdragon 7 gen 3/, 1000], [/snapdragon 7\+ gen 2/, 1100], [/snapdragon 7s gen 2/, 650], [/snapdragon 7 gen 1/, 700], [/snapdragon 778g/, 600],
+  [/snapdragon 6 gen 4/, 750], [/snapdragon 6 gen 3/, 700], [/snapdragon 6s gen 3/, 600], [/snapdragon 6 gen 1/, 500], [/snapdragon 695/, 400], [/snapdragon 680/, 300], [/snapdragon 4 gen 2/, 450], [/snapdragon 4 gen 1/, 400], [/snapdragon 4s/, 350],
+  [/dimensity 9500/, 3600], [/dimensity 9400\+/, 3100], [/dimensity 9400/, 3000], [/dimensity 9300\+/, 2300], [/dimensity 9300/, 2200], [/dimensity 9200/, 1500], [/dimensity 9000|dimensity 9100/, 1300],
+  [/dimensity 8450|dimensity 8400/, 1700], [/dimensity 8350|dimensity 8300/, 1400], [/dimensity 8250|dimensity 8200/, 1100], [/dimensity 8100|dimensity 8000/, 900],
+  [/dimensity 7400|dimensity 7300/, 800], [/dimensity 7200/, 750], [/dimensity 7050|dimensity 7025/, 600], [/dimensity 6300|dimensity 6100/, 420], [/dimensity 1200|dimensity 1100/, 700], [/dimensity 810|dimensity 800/, 450],
+  [/exynos 2600/, 3200], [/exynos 2500/, 2300], [/exynos 2400/, 1700], [/exynos 2200/, 1200], [/exynos 2100/, 1000], [/exynos 1580/, 900], [/exynos 1480/, 850], [/exynos 1380/, 650], [/exynos 1280/, 500], [/exynos 850/, 220],
+  [/tensor g5/, 1500], [/tensor g4/, 1250], [/tensor g3/, 1150], [/tensor g2/, 900], [/tensor g1|google tensor\b/, 700],
+  [/kirin 9020|kirin 9010/, 1500], [/kirin 9000s|kirin 9000\b/, 1200], [/helio g100/, 450], [/helio g99/, 400], [/helio g9[0-6]|helio g8[5-9]/, 300], [/helio g3|helio g2/, 120],
+  [/unisoc t[67]\d\d|t6[0-9]{2}|t7[0-9]{2}/, 250],
+]
+
+/** 0-100 on a log scale: 250k points ≈ 0, 4M ≈ 100, so each doubling of speed is worth 25 points. */
+export function chipsetScore(chipset: string): number | null {
+  const s = chipset.toLowerCase()
+  const hit = CHIP_BENCHMARKS.find(([re]) => re.test(s))
+  if (hit) return clamp((Math.log2(hit[1] / 250) / 4) * 100)
+  return chipsetTier(chipset)
 }
 
 const METRICS: MetricDef[] = [

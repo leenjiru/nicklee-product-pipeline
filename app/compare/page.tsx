@@ -1,13 +1,13 @@
 "use client"
 
 import type React from "react"
-import { useMemo, useRef, useState } from "react"
+import { useRef, useState } from "react"
 import { Check, Crown, Loader2, Plus, Scale, Search, Smartphone, ThumbsDown, ThumbsUp, Trophy, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { CATEGORIES, METRIC_LABELS, comparePhones, type CategoryKey, type PhoneResult, type ScorablePhone } from "@/lib/phone-scoring"
+import { CATEGORIES, METRIC_LABELS, comparePhones, type Comparison, type CategoryKey, type PhoneResult, type ScorablePhone } from "@/lib/phone-scoring"
 
 interface PhoneSearchResult { id: string; name: string; img: string; description: string }
 
@@ -62,7 +62,14 @@ export default function PhoneComparison() {
   const [error, setError] = useState<string | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
-  const comparison = useMemo(() => (selectedPhones.length >= 2 ? comparePhones(selectedPhones) : null), [selectedPhones])
+  const [comparison, setComparison] = useState<Comparison | null>(null)
+  const resultsRef = useRef<HTMLDivElement>(null)
+
+  const runComparison = () => {
+    if (selectedPhones.length < 2) return
+    setComparison(comparePhones(selectedPhones))
+    setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50)
+  }
 
   const searchPhones = async () => {
     if (!searchQuery.trim()) return
@@ -88,6 +95,7 @@ export default function PhoneComparison() {
       const added: ScorablePhone = { ...details, name: phone.name || details.name, img: details.img || phone.img }
       if (selectedPhones.some((p) => p.name === added.name)) { setError("This phone is already in the comparison"); return }
       setSelectedPhones((prev) => [...prev, added])
+      setComparison(null)
       setSearchResults([]); setSearchQuery(""); setHasSearched(false)
     } catch (err) {
       setError("Couldn't load that phone's specs. Try another result.")
@@ -95,7 +103,7 @@ export default function PhoneComparison() {
     } finally { setAddingId(null) }
   }
 
-  const removePhone = (index: number) => setSelectedPhones((prev) => prev.filter((_, i) => i !== index))
+  const removePhone = (index: number) => { setSelectedPhones((prev) => prev.filter((_, i) => i !== index)); setComparison(null) }
   const handleKeyPress = (e: React.KeyboardEvent) => { if (e.key === "Enter") searchPhones() }
   const colorOf = (phone: ScorablePhone) => selectedPhones.findIndex((p) => p.name === phone.name)
 
@@ -109,7 +117,7 @@ export default function PhoneComparison() {
             <Scale className="h-7 w-7 text-blue-600 sm:h-8 sm:w-8" />
             <h1 className="text-2xl font-bold text-gray-900 dark:text-white sm:text-4xl">Compare Phones</h1>
           </div>
-          <p className="mx-auto max-w-xl text-sm text-gray-600 dark:text-gray-300 sm:text-base">Pick 2–{MAX_PHONES} phones. They&apos;re scored on performance, camera, battery, display, storage and extras, and ranked automatically.</p>
+          <p className="mx-auto max-w-xl text-sm text-gray-600 dark:text-gray-300 sm:text-base">Pick 2–{MAX_PHONES} phones. Press Compare & Rank to score them on performance, camera, battery, display, storage and extras.</p>
         </header>
 
         {/* Slots */}
@@ -130,6 +138,12 @@ export default function PhoneComparison() {
             )
           })}
         </section>
+
+        {selectedPhones.length >= 2 && (
+          <div className="mx-auto mb-5 max-w-2xl">
+            <Button onClick={runComparison} size="lg" className="w-full bg-green-600 text-base hover:bg-green-700"><Scale className="h-5 w-5" />{comparison ? "Compare again" : "Compare & Rank"}</Button>
+          </div>
+        )}
 
         {/* Search */}
         {selectedPhones.length < MAX_PHONES && (
@@ -161,10 +175,10 @@ export default function PhoneComparison() {
         {selectedPhones.length === 0 && (
           <Card className="mx-auto max-w-2xl"><CardContent className="py-10 text-center"><Smartphone className="mx-auto mb-3 h-10 w-10 text-gray-400" /><h2 className="mb-1 text-lg font-semibold">Start comparing</h2><p className="text-sm text-muted-foreground">Search and add at least two phones to see a ranking.</p></CardContent></Card>
         )}
-        {selectedPhones.length === 1 && <p className="text-center text-sm text-muted-foreground">Add one more phone to see the comparison.</p>}
+        {selectedPhones.length === 1 && <p className="text-center text-sm text-muted-foreground">Add one more phone, then press Compare & Rank.</p>}
 
         {comparison && winner && (
-          <div className="space-y-6">
+          <div ref={resultsRef} className="scroll-mt-4 space-y-6">
             {/* Verdict */}
             <Card className="overflow-hidden border-green-500/60 bg-gradient-to-br from-green-50 to-white dark:from-green-950/30 dark:to-transparent">
               <CardContent className="flex flex-col items-center gap-4 p-4 text-center sm:flex-row sm:p-6 sm:text-left">

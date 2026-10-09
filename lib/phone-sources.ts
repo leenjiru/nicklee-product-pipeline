@@ -100,6 +100,21 @@ export async function getGsmarenaDevice(id: string): Promise<PhoneDetails> {
     })
     detailSpec.push({ category, specifications })
   })
+  // Safety net: GSMArena tags every spec cell with a data-spec attribute. If the table pass found almost nothing
+  // (markup change, odd page variant), rebuild the rows from those cells instead.
+  if (detailSpec.reduce((n, g) => n + g.specifications.length, 0) < 5) {
+    const byCategory = new Map<string, SpecItem[]>()
+    $("td.nfo[data-spec]").each((_, cell) => {
+      const value = text($(cell).text())
+      if (!value) return
+      const row = $(cell).closest("tr")
+      const name = text(row.find("td.ttl").first().text()) || ($(cell).attr("data-spec") || "")
+      const category = text($(cell).closest("table").find("th").first().text()) || "Specifications"
+      byCategory.set(category, [...(byCategory.get(category) || []), { name, value }])
+    })
+    detailSpec.length = 0
+    byCategory.forEach((specifications, category) => detailSpec.push({ category, specifications }))
+  }
   return { name, img: abs($(".specs-photo-main img").attr("src") || "", GSM), quickSpec, detailSpec, source: "GSMArena" }
 }
 
