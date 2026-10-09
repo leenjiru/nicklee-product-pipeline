@@ -113,21 +113,19 @@ export default function PhoneComparison() {
         </header>
 
         {/* Slots */}
-        <section aria-label="Phones to compare" className="mb-5 grid grid-cols-3 gap-2 sm:gap-4">
+        <section aria-label="Phones to compare" className="mb-4 grid gap-2 sm:grid-cols-3 sm:gap-3">
           {Array.from({ length: MAX_PHONES }).map((_, index) => {
             const phone = selectedPhones[index]
             return phone ? (
-              <Card key={phone.name} className="relative overflow-hidden">
-                <div className={`h-1 ${PHONE_COLORS[index]}`} />
-                <button type="button" onClick={() => removePhone(index)} className="absolute right-1 top-2 z-10 rounded-full bg-background/90 p-1.5 shadow-sm hover:bg-muted" aria-label={`Remove ${phone.name}`}><X className="h-4 w-4" /></button>
-                <CardContent className="p-2 sm:p-4">
-                  <div className="mx-auto mb-2 aspect-square w-full max-w-[140px] overflow-hidden rounded-lg bg-muted"><img src={proxied(phone.img)} alt={phone.name} className="h-full w-full object-contain" onError={(e) => { e.currentTarget.src = "/modern-smartphone.png" }} /></div>
-                  <h3 className="line-clamp-3 text-xs font-semibold leading-tight sm:text-sm">{phone.name}</h3>
-                </CardContent>
-              </Card>
+              <div key={phone.name} className="relative flex items-center gap-3 overflow-hidden rounded-xl border bg-card p-2 pr-9 shadow-sm">
+                <span className={`absolute inset-y-0 left-0 w-1 ${PHONE_COLORS[index]}`} />
+                <div className="ml-1 h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-muted"><img src={proxied(phone.img)} alt="" className="h-full w-full object-contain" onError={(e) => { e.currentTarget.src = "/modern-smartphone.png" }} /></div>
+                <h3 className="line-clamp-2 min-w-0 text-sm font-semibold leading-tight">{phone.name}</h3>
+                <button type="button" onClick={() => removePhone(index)} className="absolute right-1.5 top-1.5 rounded-full p-1.5 hover:bg-muted" aria-label={`Remove ${phone.name}`}><X className="h-4 w-4" /></button>
+              </div>
             ) : (
-              <button key={`empty-${index}`} type="button" onClick={() => searchRef.current?.focus()} className="flex min-h-[150px] flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-gray-300 p-2 text-xs text-muted-foreground transition-colors hover:border-blue-400 hover:text-blue-600 dark:border-gray-600 sm:min-h-[200px] sm:text-sm">
-                <Plus className="h-5 w-5 sm:h-6 sm:w-6" />Add phone {index + 1}{index < 2 && <span className="text-[10px] opacity-70">(required)</span>}
+              <button key={`empty-${index}`} type="button" onClick={() => searchRef.current?.focus()} className="flex h-[74px] items-center justify-center gap-2 rounded-xl border-2 border-dashed border-gray-300 text-sm text-muted-foreground transition-colors hover:border-blue-400 hover:text-blue-600 dark:border-gray-600">
+                <Plus className="h-4 w-4" />Add phone {index + 1}{index < 2 && <span className="text-[10px] opacity-70">(required)</span>}
               </button>
             )
           })}
@@ -170,7 +168,7 @@ export default function PhoneComparison() {
             {/* Verdict */}
             <Card className="overflow-hidden border-green-500/60 bg-gradient-to-br from-green-50 to-white dark:from-green-950/30 dark:to-transparent">
               <CardContent className="flex flex-col items-center gap-4 p-4 text-center sm:flex-row sm:p-6 sm:text-left">
-                <div className="h-28 w-28 shrink-0 overflow-hidden rounded-xl bg-white/70 sm:h-32 sm:w-32 dark:bg-white/10"><img src={proxied(winner.phone.img)} alt={winner.phone.name} className="h-full w-full object-contain" onError={(e) => { e.currentTarget.src = "/modern-smartphone.png" }} /></div>
+                <div className="h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-white/70 sm:h-24 sm:w-24 dark:bg-white/10"><img src={proxied(winner.phone.img)} alt={winner.phone.name} className="h-full w-full object-contain" onError={(e) => { e.currentTarget.src = "/modern-smartphone.png" }} /></div>
                 <div className="min-w-0 flex-1">
                   <Badge className="mb-2 bg-green-600"><Trophy className="mr-1 h-3 w-3" />Best overall</Badge>
                   <h2 className="text-xl font-bold sm:text-2xl">{winner.phone.name}</h2>
@@ -189,7 +187,7 @@ export default function PhoneComparison() {
                     <CardContent className="space-y-4 p-4">
                       <div className="flex items-center gap-3">
                         <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white ${rank === 0 ? "bg-green-600" : rank === 1 ? "bg-gray-500" : "bg-amber-700"}`}>{rank + 1}</div>
-                        <div className="min-w-0 flex-1"><h3 className={`text-sm font-semibold leading-tight ${PHONE_TEXT[colorOf(result.phone)] || ""}`}>{result.phone.name}</h3>{result.coverage < 0.65 && <p className="mt-0.5 text-[11px] text-amber-600">Limited spec data — score is approximate</p>}</div>
+                        <div className="min-w-0 flex-1"><h3 className={`text-sm font-semibold leading-tight ${PHONE_TEXT[colorOf(result.phone)] || ""}`}>{result.phone.name}</h3><p className="mt-0.5 text-[11px] text-muted-foreground">Leads in {result.wins} of {result.metrics.filter((m) => m.score !== null).length} specs</p>{result.coverage < 0.65 && <p className="mt-0.5 text-[11px] text-amber-600">Limited spec data — score is approximate</p>}</div>
                         <ScoreRing score={result.overall} size={60} />
                       </div>
                       <CategoryBars result={result} winners={comparison.categoryWinners} rank={rank} />

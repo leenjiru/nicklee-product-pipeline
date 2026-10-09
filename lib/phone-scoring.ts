@@ -24,11 +24,11 @@ interface MetricDef {
   category: CategoryKey
   weight: number
   /** Returns the display text and a 0-100 score, or null when the spec isn't available. */
-  read: (ctx: Ctx) => { display: string; score: number } | null
+  read: (ctx: Ctx) => { display: string; score: number; raw?: number } | null
 }
 interface Ctx { name: string; rows: Row[]; all: string }
 
-export interface MetricResult { key: string; label: string; category: CategoryKey; display: string; score: number | null; best: boolean }
+export interface MetricResult { key: string; label: string; category: CategoryKey; display: string; score: number | null; raw: number | null; best: boolean }
 export interface PhoneResult {
   phone: ScorablePhone
   overall: number
@@ -36,6 +36,8 @@ export interface PhoneResult {
   metrics: MetricResult[]
   strengths: string[]
   weaknesses: string[]
+  /** Number of specs where this phone is the clear leader. */
+  wins: number
   /** Share of the scoring weight that had real data behind it (0-1). */
   coverage: number
 }
@@ -84,7 +86,7 @@ const fmtGb = (gb: number) => (gb >= 1024 ? `${gb / 1024}TB` : `${gb}GB`)
 export function chipsetScore(chipset: string): number | null {
   const s = chipset.toLowerCase()
   let m: RegExpMatchArray | null
-  if ((m = s.match(/apple a(\d+)/))) { const a = Number(m[1]); return a >= 17 ? 95 : a >= 16 ? 90 : a >= 15 ? 85 : a >= 14 ? 78 : a >= 13 ? 72 : 60 }
+  if ((m = s.match(/apple a(\d+)/))) { const a = Number(m[1]); return a >= 19 ? 99 : a >= 18 ? 97 : a >= 17 ? 95 : a >= 16 ? 90 : a >= 15 ? 85 : a >= 14 ? 78 : a >= 13 ? 72 : 60 }
   if (/snapdragon 8 elite/.test(s)) return 98
   if ((m = s.match(/snapdragon 8s? gen\s*(\d)/))) { const g = Number(m[1]); const sMod = /8s/.test(s); return sMod ? 80 + g * 2 : [0, 82, 88, 92, 96][g] || 90 }
   if (/snapdragon 8\+/.test(s)) return 84
@@ -119,13 +121,13 @@ const METRICS: MetricDef[] = [
   } },
   { key: "ram", label: "RAM", category: "performance", weight: 10, read: (c) => {
     const { ram } = memory(c)
-    return ram ? { display: `${ram}GB`, score: clamp((Math.log2(ram / 2) / 3) * 100) } : null
+    return ram ? { raw: ram, display: `${ram}GB`, score: clamp((Math.log2(ram / 2) / 3) * 100) } : null
   } },
 
   { key: "screen", label: "Screen size", category: "display", weight: 3, read: (c) => {
     const v = find(c, /display/i, /^size$/i) || find(c, null, /display size|screen size/i)
     const inches = num(v.match(/(\d+(?:\.\d+)?)\s*(?:inches|"|'|in\b)/i)?.[1] || v.match(/(\d+(?:\.\d+)?)/)?.[1])
-    return inches ? { display: `${inches}"`, score: clamp(((inches - 5.5) / 1.4) * 100) } : null
+    return inches ? { raw: inches, display: `${inches}"`, score: clamp(((inches - 5.5) / 1.4) * 100) } : null
   } },
   { key: "panel", label: "Panel type", category: "display", weight: 5, read: (c) => {
     const v = find(c, /display/i, /^type$/i) || find(c, null, /display type|screen type/i)
@@ -136,11 +138,11 @@ const METRICS: MetricDef[] = [
   } },
   { key: "refresh", label: "Refresh rate", category: "display", weight: 4, read: (c) => {
     const hz = Math.max(0, ...[...(find(c, /display/i, /^type$/i) + " " + c.all).matchAll(/(\d{2,3})\s*Hz/gi)].map((m) => Number(m[1])))
-    return hz ? { display: `${hz}Hz`, score: hz >= 144 ? 100 : hz >= 120 ? 90 : hz >= 90 ? 55 : 20 } : null
+    return hz ? { raw: hz, display: `${hz}Hz`, score: hz >= 144 ? 100 : hz >= 120 ? 90 : hz >= 90 ? 55 : 20 } : null
   } },
   { key: "brightness", label: "Peak brightness", category: "display", weight: 2, read: (c) => {
     const nits = Math.max(0, ...[...find(c, /display/i, /^type$/i).matchAll(/(\d{3,5})\s*nits/gi)].map((m) => Number(m[1])))
-    return nits ? { display: `${nits} nits`, score: clamp(((nits - 400) / 2600) * 100) } : null
+    return nits ? { raw: nits, display: `${nits} nits`, score: clamp(((nits - 400) / 2600) * 100) } : null
   } },
   { key: "resolution", label: "Resolution", category: "display", weight: 3, read: (c) => {
     const v = find(c, /display/i, /^resolution$/i) || find(c, null, /display resolution/i)
@@ -153,12 +155,12 @@ const METRICS: MetricDef[] = [
   { key: "mainMp", label: "Main camera", category: "camera", weight: 6, read: (c) => {
     const v = find(c, /main camera/i, /^(single|dual|triple|quad|penta)$/i) || find(c, /main camera/i, null) || find(c, null, /^(primary|rear camera)/i)
     const mp = num(v.match(/(\d+(?:\.\d+)?)\s*MP/i)?.[1])
-    return mp ? { display: `${mp}MP`, score: clamp(35 + 15 * Math.log2(mp / 8)) } : null
+    return mp ? { raw: mp, display: `${mp}MP`, score: clamp(35 + 15 * Math.log2(mp / 8)) } : null
   } },
   { key: "lenses", label: "Rear cameras", category: "camera", weight: 3, read: (c) => {
     const row = c.rows.find((r) => /main camera/i.test(r.category) && /^(single|dual|triple|quad|penta)$/i.test(r.name))
     const count = row ? ({ single: 1, dual: 2, triple: 3, quad: 4, penta: 5 } as Record<string, number>)[row.name.toLowerCase()] : (find(c, /main camera/i, null).match(/\d+\s*MP/gi) || []).length
-    return count ? { display: `${count}`, score: ({ 1: 20, 2: 45, 3: 75 } as Record<number, number>)[count] ?? 100 } : null
+    return count ? { raw: count, display: `${count}`, score: ({ 1: 20, 2: 45, 3: 75 } as Record<number, number>)[count] ?? 100 } : null
   } },
   { key: "ois", label: "Optical stabilisation", category: "camera", weight: 3, read: (c) => {
     const text = c.rows.filter((r) => /main camera/i.test(r.category)).map((r) => r.value).join(" ")
@@ -172,17 +174,17 @@ const METRICS: MetricDef[] = [
   { key: "selfie", label: "Selfie camera", category: "camera", weight: 1, read: (c) => {
     const v = c.rows.find((r) => /selfie/i.test(r.category) && /MP/i.test(r.value))?.value || ""
     const mp = num(v.match(/(\d+(?:\.\d+)?)\s*MP/i)?.[1])
-    return mp ? { display: `${mp}MP`, score: clamp(25 + 12 * Math.log2(mp / 5)) } : null
+    return mp ? { raw: mp, display: `${mp}MP`, score: clamp(25 + 12 * Math.log2(mp / 5)) } : null
   } },
 
   { key: "battery", label: "Battery capacity", category: "battery", weight: 8, read: (c) => {
     const mah = num((find(c, /battery/i, /^type$/i) + " " + c.all).match(/(\d{4,5})\s*mAh/i)?.[1])
-    return mah ? { display: `${mah} mAh`, score: clamp(20 + ((mah - 3000) / 3500) * 80) } : null
+    return mah ? { raw: mah, display: `${mah} mAh`, score: clamp(20 + ((mah - 3000) / 3500) * 80) } : null
   } },
   { key: "charging", label: "Wired charging", category: "battery", weight: 5, read: (c) => {
     const v = find(c, /battery/i, /^charging$/i) || find(c, null, /charging/i)
     const watts = Math.max(0, ...[...v.matchAll(/(\d{1,3}(?:\.\d+)?)\s*W\b/g)].map((m) => Number(m[1])))
-    return watts ? { display: `${watts}W`, score: clamp(15 + 85 * Math.log10(watts / 10)) } : null
+    return watts ? { raw: watts, display: `${watts}W`, score: clamp(15 + 85 * Math.log10(watts / 10)) } : null
   } },
   { key: "wireless", label: "Wireless charging", category: "battery", weight: 1, read: (c) => {
     const v = find(c, /battery/i, /^charging$/i) || find(c, null, /charging/i)
@@ -191,7 +193,7 @@ const METRICS: MetricDef[] = [
 
   { key: "storage", label: "Storage", category: "storage", weight: 1, read: (c) => {
     const { storage } = memory(c)
-    return storage ? { display: fmtGb(storage), score: clamp((Math.log2(storage / 32) / 5) * 100) } : null
+    return storage ? { raw: storage, display: fmtGb(storage), score: clamp((Math.log2(storage / 32) / 5) * 100) } : null
   } },
 
   { key: "5g", label: "5G", category: "extras", weight: 3, read: (c) => {
@@ -245,8 +247,8 @@ export function comparePhones(phones: ScorablePhone[]): Comparison {
     const overall = weightedAverage(present.map((c) => ({ score: categories[c.key]!, weight: c.weight }))) ?? 0
     const coverage = metrics.filter((m) => m.read).reduce((s, m) => s + m.def.weight, 0) / METRICS.reduce((s, m) => s + m.weight, 0)
     return {
-      phone, overall: Math.round(overall), categories, coverage, strengths: [], weaknesses: [],
-      metrics: metrics.map((m) => ({ key: m.def.key, label: m.def.label, category: m.def.category, display: m.read?.display ?? "—", score: m.read?.score ?? null, best: false })),
+      phone, overall: Math.round(overall), categories, coverage, strengths: [], weaknesses: [], wins: 0,
+      metrics: metrics.map((m) => ({ key: m.def.key, label: m.def.label, category: m.def.category, display: m.read?.display ?? "—", score: m.read?.score ?? null, raw: m.read?.raw ?? null, best: false })),
     }
   })
 
@@ -257,10 +259,24 @@ export function comparePhones(phones: ScorablePhone[]): Comparison {
     if (real.length < 2) return
     const max = Math.max(...real), min = Math.min(...real)
     if (max - min < 8) return
+    const raws = results.map((r) => r.metrics[i].raw)
     results.forEach((r, idx) => {
       const score = values[idx]
-      if (score === max) { r.metrics[i].best = true; if (max - min >= 15) r.strengths.push(`Best ${def.label.toLowerCase()} (${r.metrics[i].display})`) }
-      else if (score === min && max - min >= 25) r.weaknesses.push(`Lowest ${def.label.toLowerCase()} (${r.metrics[i].display})`)
+      if (score === max) {
+        r.metrics[i].best = true; r.wins++
+        if (max - min >= 15) {
+          const others = raws.filter((v, k): v is number => k !== idx && v !== null && v > 0)
+          const mine = raws[idx]
+          const second = others.length ? Math.max(...others) : null
+          const pct = mine !== null && second ? Math.round(((mine - second) / second) * 100) : 0
+          r.strengths.push(pct >= 5 ? `${pct}% higher ${def.label.toLowerCase()} (${r.metrics[i].display})` : `Best ${def.label.toLowerCase()} (${r.metrics[i].display})`)
+        }
+      } else if (score === min && max - min >= 25) {
+        const mine = raws[idx]
+        const top = Math.max(...raws.filter((v): v is number => v !== null))
+        const pct = mine !== null && mine > 0 && top ? Math.round(((top - mine) / mine) * 100) : 0
+        r.weaknesses.push(pct >= 10 ? `${def.label} is ${pct}% lower than the best (${r.metrics[i].display})` : `Lowest ${def.label.toLowerCase()} (${r.metrics[i].display})`)
+      }
     })
   })
   for (const r of results) {
