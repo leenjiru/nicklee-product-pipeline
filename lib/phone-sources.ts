@@ -132,6 +132,25 @@ export async function searchAvechi(query: string): Promise<PhoneSearchResult[]> 
   return results.slice(0, 20)
 }
 
+const ALLOWED_TAGS = new Set(["h1", "h2", "h3", "h4", "h5", "h6", "p", "br", "ul", "ol", "li", "strong", "b", "em", "i", "u", "table", "thead", "tbody", "tfoot", "tr", "th", "td", "span", "a", "div", "hr"])
+
+/** The product's description tab as safe HTML: formatting tags kept, every attribute and unknown element stripped. */
+function sanitizedDescriptionHtml($: cheerio.CheerioAPI): string {
+  const panel = $("#tab-description, .woocommerce-Tabs-panel--description").first().clone()
+  if (!panel.length) return ""
+  panel.find("script, style, iframe, noscript, form, button, img, picture, svg, video").remove()
+  panel.find("h2").filter((_, el) => /^description$/i.test(text($(el).text()))).remove()
+  panel.find("*").each((_, el) => {
+    const node = $(el)
+    const tag = (el as { tagName?: string }).tagName?.toLowerCase() || ""
+    if (!ALLOWED_TAGS.has(tag)) { node.replaceWith(node.contents()); return }
+    const href = node.attr("href")
+    for (const name of Object.keys((el as { attribs?: Record<string, string> }).attribs || {})) node.removeAttr(name)
+    if (tag === "a" && href && /^https?:/i.test(href)) node.attr("href", href).attr("target", "_blank").attr("rel", "noreferrer noopener")
+  })
+  return (panel.html() || "").replace(/<(p|div|span|strong|b|em|i|li)>\s*(?:&nbsp;|\s)*<\/\1>/gi, "").trim().slice(0, 30000)
+}
+
 /** Parse specs, price and description out of an Avechi product page. Never throws; groups may be empty. */
 export function parseAvechiProduct(html: string) {
   const $ = cheerio.load(html)
@@ -175,13 +194,14 @@ export function parseAvechiProduct(html: string) {
     const t = text($(el).text())
     if (t && t.length <= 200 && !/^[^:]{2,40}:\s/.test(t) && !features.includes(t)) features.push(t)
   })
+  const descriptionHtml = sanitizedDescriptionHtml($)
   const fullDescription = text($("#tab-description, .woocommerce-Tabs-panel--description").first().text()).slice(0, 4000)
   const specImages: string[] = []
   blocks.find("img").each((_, el) => {
     const src = abs($(el).attr("data-src") || $(el).attr("data-lazy-src") || $(el).attr("src") || "", AVECHI).replace(/-\d+x\d+(\.[a-z]+)$/i, "$1")
     if (src.includes("/wp-content/uploads/") && !specImages.includes(src)) specImages.push(src)
   })
-  return { name, img, price, sku, description, detailSpec: groups, features: features.slice(0, 40), fullDescription, specImages: specImages.slice(0, 6) }
+  return { name, img, price, sku, description, detailSpec: groups, features: features.slice(0, 40), fullDescription, descriptionHtml, specImages: specImages.slice(0, 6) }
 }
 
 export async function getAvechiDevice(id: string): Promise<PhoneDetails> {

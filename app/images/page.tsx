@@ -1,8 +1,7 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import Link from "next/link"
-import { Check, Copy, Download, ExternalLink, ImageIcon, Loader2, Search } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
+import { Check, Copy, Download, ImageIcon, Loader2, Search } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -12,9 +11,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 interface ImageItem { url: string; filename: string }
 interface SpecItem { name: string; value: string }
 interface SpecGroup { category: string; specifications: SpecItem[] }
-interface Product { title: string; url: string; price?: string; images: ImageItem[] }
+interface Product { title: string; url: string; images: ImageItem[] }
 interface DetailsResponse {
-  product: { name: string; price: string; sku: string; description: string; detailSpec: SpecGroup[]; features: string[]; fullDescription: string; specImages: string[] }
+  product: { name: string; sku: string; description: string; descriptionHtml: string; detailSpec: SpecGroup[]; features: string[]; fullDescription: string; specImages: string[] }
   gsmarena: { name: string; quickSpec: SpecItem[]; detailSpec: SpecGroup[] } | null
 }
 
@@ -23,14 +22,19 @@ const clean = (value: string) => value.replace(/avechi/gi, "").replace(/\s+/g, "
 const cleanName = (filename: string) => filename.replace(/avechi/gi, "").replace(/[-_]{2,}/g, "-").replace(/^[-_]+|[-_]+$/g, "") || "product-image.jpg"
 const groupText = (group: SpecGroup) => `${group.category}\n${group.specifications.map((spec) => `${spec.name}: ${spec.value}`).join("\n")}`
 
-function CopyButton({ value, label, icon = false }: { value: string; label: string; icon?: boolean }) {
+function CopyButton({ value, label, icon = false, html }: { value: string | (() => string); label: string; icon?: boolean; html?: () => string }) {
   const [copied, setCopied] = useState(false)
   async function copy() {
+    const plain = typeof value === "function" ? value() : value
     try {
-      await navigator.clipboard.writeText(value)
+      if (html && typeof ClipboardItem !== "undefined") {
+        await navigator.clipboard.write([new ClipboardItem({ "text/html": new Blob([html()], { type: "text/html" }), "text/plain": new Blob([plain], { type: "text/plain" }) })])
+      } else {
+        await navigator.clipboard.writeText(plain)
+      }
     } catch {
       const area = document.createElement("textarea")
-      area.value = value; document.body.appendChild(area); area.select(); document.execCommand("copy"); area.remove()
+      area.value = plain; document.body.appendChild(area); area.select(); document.execCommand("copy"); area.remove()
     }
     setCopied(true); setTimeout(() => setCopied(false), 1500)
   }
@@ -46,6 +50,7 @@ function ProductDetail({ product, onBack }: { product: Product; onBack: () => vo
   const [data, setData] = useState<DetailsResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [activeImage, setActiveImage] = useState(0)
+  const descRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -60,14 +65,13 @@ function ProductDetail({ product, onBack }: { product: Product; onBack: () => vo
   const image = product.images[activeImage]
   const p = data?.product
   const gsm = data?.gsmarena
-  const price = p?.price || product.price
   const quickSpec = (gsm?.quickSpec || []).filter((spec) => spec.value)
   const detailGroups: SpecGroup[] = [
     ...(p?.detailSpec || []),
     ...(p && p.features.length ? [{ category: "Features", specifications: p.features.map((value) => ({ name: "•", value })) }] : []),
     ...(gsm?.detailSpec || []).map((group) => ({ ...group, category: `${group.category} (GSMArena)` })),
   ]
-  const everything = [title, price, p?.sku && `SKU: ${p.sku}`, p?.description, ...detailGroups.map(groupText)].filter(Boolean).join("\n\n")
+  const everything = [title, p?.sku && `SKU: ${p.sku}`, p?.description, ...detailGroups.map(groupText)].filter(Boolean).join("\n\n")
   const nothing = data && detailGroups.length === 0 && quickSpec.length === 0 && !p?.fullDescription && !p?.description && p?.specImages.length === 0
 
   return (
@@ -91,16 +95,19 @@ function ProductDetail({ product, onBack }: { product: Product; onBack: () => vo
               <div className="flex flex-wrap justify-center gap-3">
                 {image && <a href={proxied(image.url)} download={cleanName(image.filename)} target="_blank" rel="noreferrer"><Button variant="outline" className="flex items-center gap-2"><Download className="h-4 w-4" /> Download Image</Button></a>}
                 {image && <CopyButton value={image.url} label="Copy Image Link" />}
-                <Link href={product.url} target="_blank" rel="noreferrer"><Button variant="outline" className="flex items-center gap-2"><ExternalLink className="h-4 w-4" /> View on site</Button></Link>
               </div>
             </div>
 
             <div className="space-y-6">
               {!data && !error && <p className="flex items-center gap-2 text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" /> Loading product details...</p>}
               {error && <p className="text-destructive">{error}</p>}
-              {price && <div><h3 className="mb-3 text-xl font-semibold">Price</h3><div className="flex items-center gap-2 rounded-lg bg-muted p-3"><span className="flex-1 text-lg font-semibold">{price}</span><CopyButton value={price} label="Copy Price" /></div></div>}
               {p?.sku && <div><h3 className="mb-3 text-xl font-semibold">Product SKU</h3><div className="flex items-center gap-2 rounded-lg bg-muted p-3"><code className="flex-1 font-mono text-lg font-semibold text-blue-600 dark:text-blue-400">{p.sku}</code><CopyButton value={p.sku} label="Copy SKU" /></div></div>}
-              {p?.description && <div><h3 className="mb-3 text-xl font-semibold">Overview</h3><p className="text-sm text-muted-foreground">{p.description}</p></div>}
+              {p?.descriptionHtml && (
+                <div>
+                  <div className="mb-3 flex items-center justify-between gap-2"><h3 className="text-xl font-semibold">Description</h3><CopyButton label="Copy Description" value={() => descRef.current?.innerText || p.fullDescription} html={() => descRef.current?.innerHTML || p.descriptionHtml} /></div>
+                  <div ref={descRef} className="space-y-3 text-sm leading-relaxed [&_a]:text-blue-600 [&_a]:underline [&_h1]:text-lg [&_h1]:font-bold [&_h2]:text-lg [&_h2]:font-bold [&_h3]:font-bold [&_h4]:font-bold [&_h5]:font-bold [&_h6]:font-bold [&_li]:ml-5 [&_ol]:list-decimal [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:p-2 [&_th]:border [&_th]:p-2 [&_th]:text-left [&_tr:nth-child(odd)]:bg-muted/50 [&_ul]:list-disc" dangerouslySetInnerHTML={{ __html: p.descriptionHtml }} />
+                </div>
+              )}
               {quickSpec.length > 0 && <div><h3 className="mb-3 text-xl font-semibold">Key Specifications</h3><div className="grid gap-2">{quickSpec.map((spec) => <div key={spec.name} className="flex items-center justify-between border-b py-2"><span className="font-medium">{spec.name}</span><Badge variant="secondary">{spec.value}</Badge></div>)}</div></div>}
               {detailGroups.length > 0 && (
                 <div>
