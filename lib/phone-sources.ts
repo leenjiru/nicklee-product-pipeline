@@ -85,9 +85,9 @@ export async function getGsmarenaDevice(id: string): Promise<PhoneDetails> {
   ].map(([n, v]) => ({ name: n, value: text(v) }))
 
   const detailSpec: PhoneDetails["detailSpec"] = []
-  $("#specs-list table").each((_, table) => {
-    const category = text($(table).find("th").first().text())
-    if (!category) return
+  const tables = $("#specs-list table").length ? $("#specs-list table") : $("table")
+  tables.each((_, table) => {
+    const category = text($(table).find("th").first().text()) || "Specifications"
     const specifications: SpecItem[] = []
     let lastName = ""
     $(table).find("tr").each((__, row) => {

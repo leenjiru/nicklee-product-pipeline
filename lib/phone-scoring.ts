@@ -53,10 +53,19 @@ function rowsOf(phone: ScorablePhone): Row[] {
   return rows
 }
 
-/** First row whose category and name match; empty strings in the pattern mean "any". */
+/**
+ * First row matching the name (and category when given). If nothing matches under that category — spec sites word
+ * and group their sections differently — fall back to matching on the row name alone, in page order.
+ */
 function find(ctx: Ctx, cat: RegExp | null, name: RegExp | null): string {
-  return ctx.rows.find((r) => (!cat || cat.test(r.category)) && (!name || name.test(r.name)) && r.value)?.value || ""
+  const match = (useCat: boolean) => ctx.rows.find((r) => (!useCat || !cat || cat.test(r.category)) && (!name || name.test(r.name)) && r.value)?.value
+  return match(true) || (name ? match(false) : "") || ""
 }
+const LENS_ROW = /^(single|dual|triple|quad|penta)$/i
+/** Camera rows in page order: the first lens row is the main camera, the second (if any) the selfie camera. */
+function lensRows(ctx: Ctx) { return ctx.rows.filter((r) => LENS_ROW.test(r.name) && /\d\s*MP/i.test(r.value)) }
+function videoRows(ctx: Ctx) { return ctx.rows.filter((r) => /^video$/i.test(r.name) && r.value) }
+const displayType = (ctx: Ctx) => ctx.rows.find((r) => /^type$/i.test(r.name) && /lcd|oled|ips|tft|amoled|retina|dynamic/i.test(r.value))?.value || ""
 
 // ---- memory / storage ----
 function memory(ctx: Ctx): { ram: number | null; storage: number | null } {
@@ -130,18 +139,18 @@ const METRICS: MetricDef[] = [
     return inches ? { raw: inches, display: `${inches}"`, score: clamp(((inches - 5.5) / 1.4) * 100) } : null
   } },
   { key: "panel", label: "Panel type", category: "display", weight: 5, read: (c) => {
-    const v = find(c, /display/i, /^type$/i) || find(c, null, /display type|screen type/i)
+    const v = displayType(c) || find(c, null, /display type|screen type/i)
     if (!v) return null
     const t = v.toLowerCase()
     const score = /ltpo/.test(t) ? 100 : /amoled|oled|dynamic 2x/.test(t) ? 90 : /ips|lcd|pls/.test(t) ? 55 : /tft|tn/.test(t) ? 30 : 50
     return { display: v.split(",")[0].trim(), score }
   } },
   { key: "refresh", label: "Refresh rate", category: "display", weight: 4, read: (c) => {
-    const hz = Math.max(0, ...[...(find(c, /display/i, /^type$/i) + " " + c.all).matchAll(/(\d{2,3})\s*Hz/gi)].map((m) => Number(m[1])))
+    const hz = Math.max(0, ...[...(displayType(c) + " " + c.all).matchAll(/(\d{2,3})\s*Hz/gi)].map((m) => Number(m[1])))
     return hz ? { raw: hz, display: `${hz}Hz`, score: hz >= 144 ? 100 : hz >= 120 ? 90 : hz >= 90 ? 55 : 20 } : null
   } },
   { key: "brightness", label: "Peak brightness", category: "display", weight: 2, read: (c) => {
-    const nits = Math.max(0, ...[...find(c, /display/i, /^type$/i).matchAll(/(\d{3,5})\s*nits/gi)].map((m) => Number(m[1])))
+    const nits = Math.max(0, ...[...displayType(c).matchAll(/(\d{3,5})\s*nits/gi)].map((m) => Number(m[1])))
     return nits ? { raw: nits, display: `${nits} nits`, score: clamp(((nits - 400) / 2600) * 100) } : null
   } },
   { key: "resolution", label: "Resolution", category: "display", weight: 3, read: (c) => {
@@ -153,26 +162,26 @@ const METRICS: MetricDef[] = [
   } },
 
   { key: "mainMp", label: "Main camera", category: "camera", weight: 6, read: (c) => {
-    const v = find(c, /main camera/i, /^(single|dual|triple|quad|penta)$/i) || find(c, /main camera/i, null) || find(c, null, /^(primary|rear camera)/i)
+    const v = lensRows(c)[0]?.value || find(c, /main camera/i, null) || find(c, null, /^(primary|rear camera)/i)
     const mp = num(v.match(/(\d+(?:\.\d+)?)\s*MP/i)?.[1])
     return mp ? { raw: mp, display: `${mp}MP`, score: clamp(35 + 15 * Math.log2(mp / 8)) } : null
   } },
   { key: "lenses", label: "Rear cameras", category: "camera", weight: 3, read: (c) => {
-    const row = c.rows.find((r) => /main camera/i.test(r.category) && /^(single|dual|triple|quad|penta)$/i.test(r.name))
-    const count = row ? ({ single: 1, dual: 2, triple: 3, quad: 4, penta: 5 } as Record<string, number>)[row.name.toLowerCase()] : (find(c, /main camera/i, null).match(/\d+\s*MP/gi) || []).length
+    const row = lensRows(c)[0]
+    const count = row ? ({ single: 1, dual: 2, triple: 3, quad: 4, penta: 5 } as Record<string, number>)[row.name.toLowerCase()] : 0
     return count ? { raw: count, display: `${count}`, score: ({ 1: 20, 2: 45, 3: 75 } as Record<number, number>)[count] ?? 100 } : null
   } },
   { key: "ois", label: "Optical stabilisation", category: "camera", weight: 3, read: (c) => {
-    const text = c.rows.filter((r) => /main camera/i.test(r.category)).map((r) => r.value).join(" ")
+    const text = lensRows(c)[0]?.value
     return text ? (/ois/i.test(text) ? { display: "Yes", score: 100 } : { display: "No", score: 40 }) : null
   } },
   { key: "video", label: "Video recording", category: "camera", weight: 3, read: (c) => {
-    const v = c.rows.filter((r) => /main camera/i.test(r.category) && /video/i.test(r.name)).map((r) => r.value).join(" ")
+    const v = videoRows(c)[0]?.value
     if (!v) return null
     return /8K/i.test(v) ? { display: "8K", score: 100 } : /4K/i.test(v) ? { display: "4K", score: 80 } : /1080p/i.test(v) ? { display: "1080p", score: 50 } : { display: "720p or less", score: 25 }
   } },
   { key: "selfie", label: "Selfie camera", category: "camera", weight: 1, read: (c) => {
-    const v = c.rows.find((r) => /selfie/i.test(r.category) && /MP/i.test(r.value))?.value || ""
+    const v = lensRows(c)[1]?.value || ""
     const mp = num(v.match(/(\d+(?:\.\d+)?)\s*MP/i)?.[1])
     return mp ? { raw: mp, display: `${mp}MP`, score: clamp(25 + 12 * Math.log2(mp / 5)) } : null
   } },
@@ -202,12 +211,12 @@ const METRICS: MetricDef[] = [
     return net || /5g/i.test(c.name) ? { display: has ? "Yes" : "No", score: has ? 100 : 0 } : null
   } },
   { key: "nfc", label: "NFC", category: "extras", weight: 2, read: (c) => {
-    const v = find(c, /comms|connect/i, /nfc/i)
+    const v = find(c, /comms|connect/i, /^nfc$/i)
     return v ? (/^(no|-)/i.test(v) ? { display: "No", score: 0 } : { display: "Yes", score: 100 }) : null
   } },
   { key: "ip", label: "Water & dust resistance", category: "extras", weight: 2, read: (c) => {
     const m = c.all.match(/\bIP(\d)(\d)\b/i)
-    if (!m) return c.rows.length ? { display: "None listed", score: 0 } : null
+    if (!m) return null
     const [dust, water] = [Number(m[1]), Number(m[2])]
     return { display: `IP${dust}${water}`, score: water >= 8 ? 100 : water === 7 ? 85 : dust >= 6 ? 70 : 55 }
   } },
@@ -304,13 +313,15 @@ export function comparePhones(phones: ScorablePhone[]): Comparison {
   for (const [k, idx] of Object.entries(categoryWinners)) remapped[k as CategoryKey] = order.indexOf(idx as number)
 
   const [first, second] = ranked
+  const contested = Object.keys(remapped).length
+  const firstWins = Object.values(remapped).filter((v) => v === 0).length
   let verdict = ""
   if (second) {
     const gap = first.overall - second.overall
     const lead = CATEGORIES.filter((c) => (first.categories[c.key] ?? 0) - (second.categories[c.key] ?? 0) >= 10).map((c) => c.label.toLowerCase())
     verdict = gap < 3
       ? `${first.phone.name} and ${second.phone.name} are almost level (${first.overall} vs ${second.overall}) — pick on the categories that matter most to you.`
-      : `${first.phone.name} comes out ahead by ${gap} points${lead.length ? `, mainly on ${lead.slice(0, 3).join(", ")}` : ""}.`
+      : `${first.phone.name} comes out ahead by ${gap} points${lead.length ? `, mainly on ${lead.slice(0, 3).join(", ")}` : ""}.${contested ? ` It leads in ${firstWins} of ${contested} categories.` : ""}`
   }
   void winnerOriginal
   return { ranked, verdict, categoryWinners: remapped }
