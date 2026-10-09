@@ -132,12 +132,13 @@ export async function searchAvechi(query: string): Promise<PhoneSearchResult[]> 
   return results.slice(0, 20)
 }
 
-export async function getAvechiDevice(id: string): Promise<PhoneDetails> {
-  const url = decodeURIComponent(id.slice(AVECHI_PREFIX.length))
-  if (!isAvechiProduct(url)) throw new Error("Invalid product url")
-  const $ = cheerio.load(await fetchHtml(url))
-  const name = text($("h1").first().text()) || text($("meta[property='og:title']").attr("content"))
+/** Parse specs, price and description out of an Avechi product page. Never throws; groups may be empty. */
+export function parseAvechiProduct(html: string) {
+  const $ = cheerio.load(html)
+  const name = (text($("h1").first().text()) || text($("meta[property='og:title']").attr("content"))).replace(/avechi/gi, "").trim()
   const img = abs($("meta[property='og:image']").attr("content") || "", AVECHI)
+  const price = text($("p.price, .summary .price").first().text()) || text($("meta[property='product:price:amount']").attr("content"))
+  const description = text($(".woocommerce-product-details__short-description").text())
 
   const groups: PhoneDetails["detailSpec"] = []
   const collect = (category: string, specifications: SpecItem[]) => { if (specifications.length) groups.push({ category, specifications }) }
@@ -166,7 +167,13 @@ export async function getAvechiDevice(id: string): Promise<PhoneDetails> {
     })
     collect(`Specifications${i ? ` ${i + 1}` : ""}`, rows)
   })
+  return { name, img, price, description, detailSpec: groups }
+}
 
+export async function getAvechiDevice(id: string): Promise<PhoneDetails> {
+  const url = decodeURIComponent(id.slice(AVECHI_PREFIX.length))
+  if (!isAvechiProduct(url)) throw new Error("Invalid product url")
+  const { name, img, detailSpec: groups } = parseAvechiProduct(await fetchHtml(url))
   if (!name || !groups.length) throw new Error("No specifications found on product page")
   const all = groups.flatMap((g) => g.specifications)
   const pick = (re: RegExp) => all.find((s) => re.test(s.name))?.value || ""
@@ -176,7 +183,7 @@ export async function getAvechiDevice(id: string): Promise<PhoneDetails> {
     ["RAM size", pick(/ram|memory/i)], ["Chipset", pick(/chipset|processor|cpu/i)],
     ["Battery size", pick(/battery/i)], ["Battery type", ""],
   ].map(([n, v]) => ({ name: n, value: v }))
-  return { name: name.replace(/avechi/gi, "").trim(), img, quickSpec, detailSpec: groups, source: "Avechi" }
+  return { name, img, quickSpec, detailSpec: groups, source: "Avechi" }
 }
 
 export const isAvechiId = (id: string) => id.startsWith(AVECHI_PREFIX)

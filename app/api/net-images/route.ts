@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
+import { parseAvechiProduct } from "@/lib/phone-sources"
 
 const BASE_URL = "https://avechi.co.ke"
 const headers = {
@@ -45,7 +46,8 @@ export async function GET(request: NextRequest) {
         for (const candidate of match[1].split(",")) addImage(candidate.trim().split(/\s+/)[0])
         if (images.length >= maxImages) break
       }
-      return { title, url, images: images.slice(0, maxImages) }
+      const { price, description, detailSpec } = parseAvechiProduct(html)
+      return { title, url, price, description, specs: detailSpec, images: images.slice(0, maxImages) }
     }))
     return NextResponse.json({ query, products: products.filter(Boolean) })
   } catch (error) {
