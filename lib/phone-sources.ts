@@ -139,6 +139,7 @@ export function parseAvechiProduct(html: string) {
   const img = abs($("meta[property='og:image']").attr("content") || "", AVECHI)
   const price = text($("p.price, .summary .price").first().text()) || text($("meta[property='product:price:amount']").attr("content"))
   const description = text($(".woocommerce-product-details__short-description").text())
+  const sku = text($(".sku").first().text())
 
   const groups: PhoneDetails["detailSpec"] = []
   const collect = (category: string, specifications: SpecItem[]) => { if (specifications.length) groups.push({ category, specifications }) }
@@ -180,7 +181,7 @@ export function parseAvechiProduct(html: string) {
     const src = abs($(el).attr("data-src") || $(el).attr("data-lazy-src") || $(el).attr("src") || "", AVECHI).replace(/-\d+x\d+(\.[a-z]+)$/i, "$1")
     if (src.includes("/wp-content/uploads/") && !specImages.includes(src)) specImages.push(src)
   })
-  return { name, img, price, description, detailSpec: groups, features: features.slice(0, 40), fullDescription, specImages: specImages.slice(0, 6) }
+  return { name, img, price, sku, description, detailSpec: groups, features: features.slice(0, 40), fullDescription, specImages: specImages.slice(0, 6) }
 }
 
 export async function getAvechiDevice(id: string): Promise<PhoneDetails> {
