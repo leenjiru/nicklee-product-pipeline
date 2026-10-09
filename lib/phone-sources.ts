@@ -167,7 +167,20 @@ export function parseAvechiProduct(html: string) {
     })
     collect(`Specifications${i ? ` ${i + 1}` : ""}`, rows)
   })
-  return { name, img, price, description, detailSpec: groups }
+
+  // Pages that don't use tables or "Key: value" lines: keep bullet points, the full description text and any spec-sheet images
+  const features: string[] = []
+  blocks.find("li").each((_, el) => {
+    const t = text($(el).text())
+    if (t && t.length <= 200 && !/^[^:]{2,40}:\s/.test(t) && !features.includes(t)) features.push(t)
+  })
+  const fullDescription = text($("#tab-description, .woocommerce-Tabs-panel--description").first().text()).slice(0, 4000)
+  const specImages: string[] = []
+  blocks.find("img").each((_, el) => {
+    const src = abs($(el).attr("data-src") || $(el).attr("data-lazy-src") || $(el).attr("src") || "", AVECHI).replace(/-\d+x\d+(\.[a-z]+)$/i, "$1")
+    if (src.includes("/wp-content/uploads/") && !specImages.includes(src)) specImages.push(src)
+  })
+  return { name, img, price, description, detailSpec: groups, features: features.slice(0, 40), fullDescription, specImages: specImages.slice(0, 6) }
 }
 
 export async function getAvechiDevice(id: string): Promise<PhoneDetails> {
@@ -187,3 +200,16 @@ export async function getAvechiDevice(id: string): Promise<PhoneDetails> {
 }
 
 export const isAvechiId = (id: string) => id.startsWith(AVECHI_PREFIX)
+
+/** Look up GSMArena specs for a product title; returns null if nothing matches or the site is unreachable. */
+export async function findGsmarenaSpecs(title: string): Promise<PhoneDetails | null> {
+  const query = title.replace(/avechi/gi, "").replace(/price in kenya|best price|buy|online|\|.*$/gi, "").replace(/\s+/g, " ").trim()
+  if (!query) return null
+  try {
+    const [first] = await searchGsmarena(query)
+    return first ? await getGsmarenaDevice(first.id) : null
+  } catch (error) {
+    console.error("GSMArena lookup failed:", error)
+    return null
+  }
+}
