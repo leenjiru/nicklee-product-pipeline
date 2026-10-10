@@ -2,7 +2,7 @@
 
 import type React from "react"
 import { useState } from "react"
-import { Search, Laptop, Loader2, Copy, Check, Download, ShoppingCart } from "lucide-react"
+import { Search, Laptop, Loader2, Copy, Check, Download, ShoppingCart, Instagram, ExternalLink } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -38,6 +38,10 @@ interface LaptopDetail {
   }
 }
 
+interface InstagramPost { shortcode: string; permalink: string; caption: string; date: string; owner: string; images: string[]; isVideo: boolean }
+
+const proxied = (url: string) => `/api/proxy-image?url=${encodeURIComponent(url)}`
+
 export default function LaptopLookup() {
   const [searchQuery, setSearchQuery] = useState("")
   const [searchResults, setSearchResults] = useState<LaptopSearchResult[]>([])
@@ -46,6 +50,11 @@ export default function LaptopLookup() {
   const [isLoadingDetails, setIsLoadingDetails] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isCopied, setIsCopied] = useState(false)
+  const [igPosts, setIgPosts] = useState<InstagramPost[]>([])
+  const [igLoading, setIgLoading] = useState(false)
+  const [igMessage, setIgMessage] = useState<string | null>(null)
+  const [igSearched, setIgSearched] = useState(false)
+  const [igCopied, setIgCopied] = useState<string | null>(null)
 
   // Mock laptop data for demonstration
   const mockLaptops: LaptopSearchResult[] = [
@@ -158,8 +167,32 @@ export default function LaptopLookup() {
     },
   }
 
+  const searchInstagram = async (query: string) => {
+    setIgLoading(true); setIgMessage(null); setIgPosts([]); setIgSearched(false)
+    try {
+      const response = await fetch(`/api/instagram-images?query=${encodeURIComponent(query)}`)
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || "Instagram search failed")
+      setIgPosts(data.posts || [])
+      if (data.errors?.length) setIgMessage(data.errors.join(" · "))
+    } catch (err) {
+      setIgMessage(err instanceof Error ? err.message : "Instagram search failed")
+    } finally { setIgLoading(false); setIgSearched(true) }
+  }
+
+  const copyText = async (text: string, key: string) => {
+    try { await navigator.clipboard.writeText(text); setIgCopied(key); setTimeout(() => setIgCopied(null), 1500) } catch (err) { console.error("Copy failed:", err) }
+  }
+
+  const downloadInstagramImage = (url: string, name: string) => {
+    const link = document.createElement("a")
+    link.href = proxied(url); link.download = `${name}.jpg`; link.target = "_blank"
+    document.body.appendChild(link); link.click(); document.body.removeChild(link)
+  }
+
   const searchLaptops = async () => {
     if (!searchQuery.trim()) return
+    searchInstagram(searchQuery.trim())
 
     setIsSearching(true)
     setError(null)
@@ -320,6 +353,35 @@ export default function LaptopLookup() {
               <p className="text-red-600 dark:text-red-400 text-center">{error}</p>
             </CardContent>
           </Card>
+        )}
+
+        {/* Instagram images */}
+        {(igLoading || igSearched) && (
+          <div className="max-w-6xl mx-auto mb-8">
+            <h2 className="text-2xl font-semibold mb-4 flex items-center gap-2 text-gray-900 dark:text-white"><Instagram className="h-6 w-6 text-pink-600" />Instagram images</h2>
+            {igLoading && <p className="flex items-center gap-2 text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" />Searching Instagram...</p>}
+            {igMessage && <p className="mb-4 rounded-md bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">{igMessage}</p>}
+            {!igLoading && igSearched && igPosts.length === 0 && !igMessage && <p className="text-muted-foreground">No Instagram posts matched &ldquo;{searchQuery}&rdquo;.</p>}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+              {igPosts.flatMap((post) => post.images.map((image, index) => ({ post, image, index }))).map(({ post, image, index }) => {
+                const key = `${post.shortcode}-${index}`
+                return (
+                  <Card key={key} className="overflow-hidden">
+                    <CardContent className="p-2">
+                      <div className="aspect-square overflow-hidden rounded-md bg-muted"><img src={proxied(image)} alt={post.caption.slice(0, 80) || "Instagram image"} className="h-full w-full object-cover" loading="lazy" onError={(e) => { e.currentTarget.src = "/placeholder.svg" }} /></div>
+                      <p className="mt-2 line-clamp-2 text-xs text-muted-foreground" title={post.caption}>{post.caption || "No caption"}</p>
+                      <p className="mt-1 text-[11px] text-muted-foreground">@{post.owner.replace(/^#/, "")} · {new Date(post.date).toLocaleDateString()}</p>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <Button variant="outline" size="sm" onClick={() => downloadInstagramImage(image, `${post.shortcode}-${index + 1}`)} aria-label="Download image"><Download className="h-3.5 w-3.5" /></Button>
+                        <Button variant="outline" size="sm" onClick={() => copyText(post.caption, `c-${key}`)} disabled={!post.caption} aria-label="Copy caption">{igCopied === `c-${key}` ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}</Button>
+                        <a href={post.permalink} target="_blank" rel="noreferrer" aria-label="Open post on Instagram"><Button variant="outline" size="sm" type="button"><ExternalLink className="h-3.5 w-3.5" /></Button></a>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )
+              })}
+            </div>
+          </div>
         )}
 
         {/* Search Results */}
