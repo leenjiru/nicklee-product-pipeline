@@ -32,11 +32,11 @@ To learn more, take a look at the following resources:
 - [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
 - [v0 Documentation](https://v0.app/docs) - learn about v0 and how to use it.
 
-## Instagram images (laptop search)
+## Instagram images (Instagram page)
 
-The laptop page can show images from Instagram posts. It uses [Instaloader](https://github.com/instaloader/instaloader) in a small separate service (`instagram-service/`), because Instaloader is Python and needs a long-running host (not Vercel).
+The /instagram page searches Instagram (keyword search plus matching hashtags) and shows the posts' images. It uses [Instaloader](https://github.com/instaloader/instaloader) in a small separate service (`instagram-service/`), because Instaloader is Python and needs a long-running host (not Vercel).
 
-1. Deploy `instagram-service/` anywhere that runs Docker/Python. Set `SERVICE_TOKEN` (any long random string), `IG_PROFILES` (comma-separated usernames to search) and, recommended, `IG_USER` + `IG_SESSIONFILE` (create the session file with `instaloader --login=YOUR_USER`). See the header of `instagram-service/app.py` for every option.
+1. Deploy `instagram-service/` anywhere that runs Docker/Python. Set `SERVICE_TOKEN` (any long random string), `IG_USER` + `IG_SESSIONFILE` (required, Instagram search needs a login; create the session file with `instaloader --login=YOUR_USER`). See the header of `instagram-service/app.py` for every option.
 2. In the Next.js project set `INSTAGRAM_SERVICE_URL` (the service's URL) and `INSTAGRAM_SERVICE_TOKEN` (same as `SERVICE_TOKEN`).
 
-Instagram rate-limits and blocks scraping, so results are cached for 10 minutes and the service scans only recent posts. Use a dedicated Instagram account for the login, not your main one.
+Instagram rate-limits and blocks scraping, so results are cached for 30 minutes and each search reads only a few pages. Use a dedicated Instagram account for the login, not your main one.

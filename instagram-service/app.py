@@ -1,22 +1,31 @@
 """
 Small Instaloader-backed service the Next.js app calls to find Instagram images.
 
-Run it somewhere that can hold a long-lived process (a VPS, Fly.io, Railway, a home server) - not on Vercel.
+A query like "hp 840 g3" is run through Instagram's keyword search (the "For you" grid in the app,
+which matches posts from any account), then topped up with posts from matching hashtags (#hp840g3
+plus related tags Instagram suggests) and, optionally, a fixed list of profiles.
+
+Run it somewhere that can hold a long-lived process (a VPS, a home server) - not on Vercel.
 
 Environment:
   SERVICE_TOKEN    shared secret the Next.js app sends in the X-Service-Token header (required)
-  IG_PROFILES      comma-separated Instagram usernames to search, e.g. "nicklee_ke,hp_kenya" (required unless hashtags are used)
-  IG_USER          Instagram login used for the session (strongly recommended; hashtag search needs it)
+  IG_USER          Instagram login used for the session (required in practice; search needs it)
   IG_SESSIONFILE   path to a session file made with `instaloader --login=IG_USER` (preferred over a password)
   IG_PASSWORD      only if you have no session file
-  IG_USE_HASHTAGS  "1" to also search the hashtag derived from the query (requires login)
-  IG_MAX_POSTS     posts scanned per profile/hashtag (default 60)
-  CACHE_SECONDS    how long identical searches are cached (default 600) - keep this high, Instagram rate limits hard
+  IG_PROFILES      optional comma-separated usernames whose recent posts are also scanned
+  IG_SEARCH_PAGES  pages of keyword-search results read per query (default 3)
+  IG_MAX_TAGS      hashtags searched per query (default 3)
+  IG_MAX_POSTS     posts read per hashtag/profile (default 24)
+  TIME_BUDGET      seconds one search may spend talking to Instagram (default 40; the Next.js route waits 55)
+  CACHE_SECONDS    how long identical searches are cached (default 1800) - keep this high, Instagram rate limits hard
 """
 import os
 import re
 import time
 import threading
+import uuid
+from datetime import datetime, timezone
+from itertools import islice
 from typing import Any
 
 import instaloader
@@ -26,12 +35,31 @@ app = Flask(__name__)
 
 SERVICE_TOKEN = os.environ.get("SERVICE_TOKEN", "")
 PROFILES = [p.strip().lstrip("@") for p in os.environ.get("IG_PROFILES", "").split(",") if p.strip()]
-MAX_POSTS = int(os.environ.get("IG_MAX_POSTS", "60"))
-CACHE_SECONDS = int(os.environ.get("CACHE_SECONDS", "600"))
-USE_HASHTAGS = os.environ.get("IG_USE_HASHTAGS") == "1"
+SEARCH_PAGES = int(os.environ.get("IG_SEARCH_PAGES", "3"))
+MAX_TAGS = int(os.environ.get("IG_MAX_TAGS", "3"))
+MAX_POSTS = int(os.environ.get("IG_MAX_POSTS", "24"))
+TIME_BUDGET = float(os.environ.get("TIME_BUDGET", "40"))
+CACHE_SECONDS = int(os.environ.get("CACHE_SECONDS", "1800"))
+MAX_RESULTS = 60
 
 _lock = threading.Lock()  # Instaloader's context isn't thread safe and we want to be gentle with Instagram
 _cache: dict[str, tuple[float, Any]] = {}
+
+RateLimited = instaloader.exceptions.TooManyRequestsException
+LoginRequired = instaloader.exceptions.LoginRequiredException
+
+
+class OutOfTime(Exception):
+    pass
+
+
+class FailFastRateController(instaloader.RateController):
+    """Instaloader normally sleeps for minutes when rate limited; a web request can't wait that long."""
+
+    def sleep(self, secs: float):
+        if secs > 15:
+            raise RateLimited(f"rate limited for {int(secs)}s")
+        time.sleep(secs)
 
 
 def make_loader() -> instaloader.Instaloader:
@@ -39,6 +67,7 @@ def make_loader() -> instaloader.Instaloader:
         download_pictures=False, download_videos=False, download_video_thumbnails=False,
         download_geotags=False, download_comments=False, save_metadata=False,
         compress_json=False, quiet=True, max_connection_attempts=1,
+        rate_controller=lambda ctx: FailFastRateController(ctx),
     )
     user = os.environ.get("IG_USER")
     if user:
@@ -48,7 +77,7 @@ def make_loader() -> instaloader.Instaloader:
                 loader.load_session_from_file(user, session_file)
             elif os.environ.get("IG_PASSWORD"):
                 loader.login(user, os.environ["IG_PASSWORD"])
-        except Exception as error:  # run anonymously rather than crash; most things will then be rate limited
+        except Exception as error:  # run anonymously rather than crash; search will then fail with a clear error
             print(f"Instagram login failed: {error}", flush=True)
     return loader
 
@@ -60,87 +89,216 @@ def tokens(query: str) -> list[str]:
     return [t for t in re.findall(r"[a-z0-9]+", query.lower()) if len(t) > 1]
 
 
-def post_to_item(post: instaloader.Post, owner: str) -> dict[str, Any]:
-    images: list[str] = []
-    if post.typename == "GraphSidecar":
-        images = [node.display_url for node in post.get_sidecar_nodes() if not node.is_video]
-    elif not post.is_video:
-        images = [post.url]
-    else:
-        images = [post.url]  # a video's thumbnail
-    return {
-        "shortcode": post.shortcode,
-        "permalink": f"https://www.instagram.com/p/{post.shortcode}/",
-        "caption": (post.caption or "")[:1500],
-        "date": post.date_utc.isoformat(),
-        "owner": owner,
-        "images": images[:10],
-        "isVideo": bool(post.is_video),
-    }
+def key_words(words: list[str]) -> list[str]:
+    """The words a result must contain: model numbers ("840", "g3") if any, otherwise every word."""
+    return [w for w in words if any(c.isdigit() for c in w)] or words
 
 
-def matches(caption: str, words: list[str]) -> int:
+def score(caption: str, words: list[str]) -> int:
     text = caption.lower()
     return sum(1 for w in words if w in text)
 
 
-def scan(posts, owner: str, words: list[str], found: list[dict], limit: int):
-    scanned = 0
-    for post in posts:
-        scanned += 1
-        score = matches(post.caption or "", words)
-        # require every word; a single-word query matches on that word
-        if score == len(words):
-            item = post_to_item(post, owner)
-            item["score"] = score
-            found.append(item)
-        if scanned >= limit:
+# --- keyword search ("For you" grid) ---------------------------------------------------------
+
+def best_image(media: dict) -> str | None:
+    candidates = (media.get("image_versions2") or {}).get("candidates") or []
+    if not candidates:
+        return None
+    return max(candidates, key=lambda c: c.get("width", 0) * c.get("height", 0)).get("url")
+
+
+def media_to_item(media: dict, source: str, words: list[str]) -> dict[str, Any] | None:
+    code = media.get("code")
+    if not code:
+        return None
+    children = media.get("carousel_media") or []
+    images = [url for url in (best_image(child) for child in children if child.get("media_type") != 2) if url] if children else []
+    if not images and (url := best_image(media) or (best_image(children[0]) if children else None)):
+        images = [url]  # the photo, or a video's cover
+    if not images:
+        return None
+    caption = (media.get("caption") or {}).get("text") or ""
+    taken = media.get("taken_at")
+    return {
+        "shortcode": code,
+        "permalink": f"https://www.instagram.com/p/{code}/",
+        "caption": caption[:1500],
+        "date": datetime.fromtimestamp(taken, timezone.utc).isoformat() if taken else "",
+        "owner": (media.get("user") or {}).get("username", ""),
+        "source": source,
+        "images": images[:10],
+        "isVideo": media.get("media_type") == 2,
+        "likes": media.get("like_count") or 0,
+        "views": media.get("play_count") or media.get("view_count") or 0,
+        "score": score(caption, words),
+    }
+
+
+def find_medias(node: Any) -> list[dict]:
+    """The search response nests posts in sections/layouts that Instagram reshuffles; collect every media dict."""
+    out: list[dict] = []
+    if isinstance(node, dict):
+        media = node.get("media")
+        if isinstance(media, dict) and media.get("code"):
+            out.append(media)
+        else:
+            for value in node.values():
+                out.extend(find_medias(value))
+    elif isinstance(node, list):
+        for value in node:
+            out.extend(find_medias(value))
+    return out
+
+
+def keyword_search(query: str, words: list[str], found: dict[str, dict], deadline: float):
+    params: dict[str, Any] = {"query": query, "search_session_id": str(uuid.uuid4())}
+    for _ in range(SEARCH_PAGES):
+        if time.time() > deadline:
+            raise OutOfTime()
+        data = L.context.get_json("api/v1/fbsearch/web/top_serp/", params)
+        for media in find_medias(data.get("media_grid", data)):
+            item = media_to_item(media, "search", words)
+            if item and item["shortcode"] not in found:
+                found[item["shortcode"]] = item
+        grid = data.get("media_grid") or {}
+        if not grid.get("has_more") or not grid.get("next_max_id"):
             break
+        params.update({"next_max_id": grid["next_max_id"], "rank_token": grid.get("rank_token", "")})
+
+
+# --- hashtags and profiles (fallback / extra) --------------------------------------------------
+
+def candidate_tags(query: str, words: list[str]) -> list[str]:
+    tags = ["".join(words)]
+    required = key_words(words)
+    try:
+        for tag in instaloader.TopSearchResults(L.context, query).get_hashtag_strings():
+            tag = tag.lower()
+            if all(w in tag for w in required) and tag not in tags:
+                tags.append(tag)
+    except (RateLimited, LoginRequired):
+        raise
+    except Exception as error:
+        print(f"Instagram top search failed: {error}", flush=True)
+    return tags[:MAX_TAGS]
+
+
+def post_to_item(post: instaloader.Post, source: str, words: list[str]) -> dict[str, Any]:
+    images = [post.url]
+    if post.typename == "GraphSidecar":
+        try:
+            images = [node.display_url for node in post.get_sidecar_nodes() if not node.is_video] or images
+        except Exception:
+            pass
+    caption = post.caption or ""
+    try:
+        owner = post.owner_username
+    except Exception:
+        owner = ""
+    return {
+        "shortcode": post.shortcode,
+        "permalink": f"https://www.instagram.com/p/{post.shortcode}/",
+        "caption": caption[:1500],
+        "date": post.date_utc.isoformat(),
+        "owner": owner,
+        "source": source,
+        "images": images[:10],
+        "isVideo": bool(post.is_video),
+        "likes": post.likes or 0,
+        "views": 0,
+        "score": score(caption, words),
+    }
+
+
+def collect(posts, source: str, words: list[str], found: dict[str, dict], deadline: float, require_caption: bool):
+    for post in islice(posts, MAX_POSTS):
+        if time.time() > deadline:
+            raise OutOfTime()
+        if post.shortcode in found:
+            continue
+        # posts from a matching hashtag are relevant already; posts from a profile must mention the product
+        if require_caption and not all(w in (post.caption or "").lower() for w in key_words(words)):
+            continue
+        found[post.shortcode] = post_to_item(post, source, words)
+
+
+def hashtag_search(query: str, words: list[str], found: dict[str, dict], deadline: float, errors: list[str]) -> list[str]:
+    tags = candidate_tags(query, words)
+    for tag in tags:
+        try:
+            hashtag = instaloader.Hashtag.from_name(L.context, tag)
+            collect(hashtag.get_top_posts(), f"#{tag}", words, found, deadline, False)
+            collect(hashtag.get_posts_resumable(), f"#{tag}", words, found, deadline, False)
+        except instaloader.exceptions.QueryReturnedNotFoundException:
+            continue  # nobody uses this tag
+        except (RateLimited, LoginRequired, OutOfTime):
+            raise
+        except Exception as error:
+            errors.append(f"#{tag}: {error}")
+        if len(found) >= MAX_RESULTS:
+            break
+    return tags
 
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "profiles": PROFILES, "loggedIn": bool(L.context.username)})
+    return jsonify({"ok": True, "loggedIn": bool(L.context.username), "profiles": PROFILES})
 
 
 @app.get("/search")
 def search():
     if not SERVICE_TOKEN or request.headers.get("X-Service-Token") != SERVICE_TOKEN:
         return jsonify({"error": "Unauthorized"}), 401
-    query = (request.args.get("query") or "").strip()
+    query = " ".join((request.args.get("query") or "").split())
     words = tokens(query)
     if not words:
         return jsonify({"error": "query is required"}), 400
+    if not L.context.username:
+        return jsonify({"error": "The Instagram service isn't logged in - check IG_USER / IG_SESSIONFILE"}), 503
 
     key = " ".join(words)
     cached = _cache.get(key)
     if cached and time.time() - cached[0] < CACHE_SECONDS:
         return jsonify({**cached[1], "cached": True})
 
-    found: list[dict] = []
+    found: dict[str, dict] = {}
     errors: list[str] = []
+    tags: list[str] = []
     with _lock:
-        for username in PROFILES:
+        deadline = time.time() + TIME_BUDGET
+        try:
             try:
-                profile = instaloader.Profile.from_username(L.context, username)
-                scan(profile.get_posts(), username, words, found, MAX_POSTS)
-            except instaloader.exceptions.TooManyRequestsException:
-                errors.append(f"@{username}: Instagram rate limit reached, try again later")
-                break
+                keyword_search(query, words, found, deadline)
+            except (RateLimited, LoginRequired, OutOfTime):
+                raise
             except Exception as error:
-                errors.append(f"@{username}: {error}")
-        if USE_HASHTAGS and L.context.username:
-            tag = "".join(words)
-            try:
-                scan(instaloader.Hashtag.from_name(L.context, tag).get_posts(), f"#{tag}", words, found, MAX_POSTS)
-            except Exception as error:
-                errors.append(f"#{tag}: {error}")
+                print(f"Instagram keyword search failed: {error}", flush=True)
+                errors.append(f"Keyword search: {error}")
+            if len(found) < MAX_RESULTS:
+                tags = hashtag_search(query, words, found, deadline, errors)
+            for username in PROFILES:
+                try:
+                    profile = instaloader.Profile.from_username(L.context, username)
+                    collect(profile.get_posts(), f"@{username}", words, found, deadline, True)
+                except (RateLimited, LoginRequired, OutOfTime):
+                    raise
+                except Exception as error:
+                    errors.append(f"@{username}: {error}")
+        except RateLimited:
+            errors.append("Instagram rate limit reached - showing what was found so far, try again in a while")
+        except LoginRequired:
+            errors.append("The Instagram session has expired - log in again and restart the service")
+        except OutOfTime:
+            pass  # return what we have; a repeat search is served from the cache
 
-    seen: set[str] = set()
-    unique = [p for p in found if not (p["shortcode"] in seen or seen.add(p["shortcode"]))]
-    unique.sort(key=lambda p: p["date"], reverse=True)
-    payload = {"query": query, "posts": unique[:24], "errors": errors}
-    if unique or not errors:  # don't cache pure failures
+    if found:
+        errors = [e for e in errors if not e.startswith("Keyword search:")]  # hashtags covered for it
+    # keyword-search order is Instagram's relevance ranking, so keep it first; sort only the extras
+    ordered = [p for p in found.values() if p["source"] == "search"]
+    ordered += sorted((p for p in found.values() if p["source"] != "search"), key=lambda p: (p["score"], p["date"]), reverse=True)
+    payload = {"query": query, "tags": tags, "posts": ordered[:MAX_RESULTS], "errors": errors}
+    if ordered or not errors:  # don't cache pure failures
         _cache[key] = (time.time(), payload)
     return jsonify(payload)
 

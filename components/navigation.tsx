@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Smartphone, Laptop, BarChart3, ImageIcon } from "lucide-react"
+import { Smartphone, Laptop, BarChart3, ImageIcon, Instagram } from "lucide-react"
 import { Button } from "@/components/ui/button"
 
 export default function Navigation() {
@@ -32,6 +32,12 @@ export default function Navigation() {
       label: "Net Images",
       icon: ImageIcon,
       active: pathname === "/images",
+    },
+    {
+      href: "/instagram",
+      label: "Instagram",
+      icon: Instagram,
+      active: pathname === "/instagram",
     },
   ]
 
