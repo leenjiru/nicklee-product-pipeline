@@ -44,6 +44,7 @@ MAX_RESULTS = 60
 
 _lock = threading.Lock()  # Instaloader's context isn't thread safe and we want to be gentle with Instagram
 _cache: dict[str, tuple[float, Any]] = {}
+_post_cache: dict[str, tuple[float, Any]] = {}
 
 RateLimited = instaloader.exceptions.TooManyRequestsException
 LoginRequired = instaloader.exceptions.LoginRequiredException
@@ -121,13 +122,16 @@ def media_to_item(media: dict, source: str, words: list[str]) -> dict[str, Any] 
     caption = (media.get("caption") or {}).get("text") or ""
     taken = media.get("taken_at")
     return {
+        "id": str(media.get("pk") or ""),
         "shortcode": code,
         "permalink": f"https://www.instagram.com/p/{code}/",
         "caption": caption[:1500],
         "date": datetime.fromtimestamp(taken, timezone.utc).isoformat() if taken else "",
         "owner": (media.get("user") or {}).get("username", ""),
         "source": source,
-        "images": images[:10],
+        "images": images[:20],
+        # search results carry only a carousel's first photo; /post returns the rest
+        "imageCount": max(media.get("carousel_media_count") or 0, len(images)),
         "isVideo": media.get("media_type") == 2,
         "likes": media.get("like_count") or 0,
         "views": media.get("play_count") or media.get("view_count") or 0,
@@ -207,13 +211,15 @@ def post_to_item(post: instaloader.Post, source: str, words: list[str]) -> dict[
     except Exception:
         owner = ""
     return {
+        "id": str(post.mediaid),
         "shortcode": post.shortcode,
         "permalink": f"https://www.instagram.com/p/{post.shortcode}/",
         "caption": caption[:1500],
         "date": post.date_utc.isoformat(),
         "owner": owner,
         "source": source,
-        "images": images[:10],
+        "images": images[:20],
+        "imageCount": len(images[:20]),
         "isVideo": bool(post.is_video),
         "likes": post.likes or 0,
         "views": 0,
@@ -252,14 +258,48 @@ def hashtag_search(words: list[str], found: dict[str, dict], deadline: float, er
     return tags
 
 
+def authorized() -> bool:
+    return bool(SERVICE_TOKEN) and request.headers.get("X-Service-Token") == SERVICE_TOKEN
+
+
 @app.get("/health")
 def health():
     return jsonify({"ok": True, "loggedIn": bool(L.context.username), "profiles": PROFILES})
 
 
+@app.get("/post")
+def post_details():
+    """Every photo and the full caption of one post (search results carry only the first photo of a carousel)."""
+    if not authorized():
+        return jsonify({"error": "Unauthorized"}), 401
+    media_id = (request.args.get("id") or "").strip()
+    if not media_id.isdigit():
+        return jsonify({"error": "id is required"}), 400
+    if not L.context.username:
+        return jsonify({"error": "The Instagram service isn't logged in - check IG_USER / IG_SESSIONFILE"}), 503
+
+    cached = _post_cache.get(media_id)
+    if cached and time.time() - cached[0] < CACHE_SECONDS:
+        return jsonify(cached[1])
+    with _lock:
+        try:
+            data = L.context.get_iphone_json(f"api/v1/media/{media_id}/info/", {})
+            item = media_to_item((data.get("items") or [{}])[0], "post", [])
+        except RateLimited:
+            return jsonify({"error": "Instagram rate limit reached, try again in a while"}), 429
+        except LoginRequired:
+            return jsonify({"error": "The Instagram session has expired - log in again and restart the service"}), 503
+        except Exception as error:
+            return jsonify({"error": f"Couldn't load the post: {error}"}), 502
+    if not item:
+        return jsonify({"error": "The post has no photos"}), 404
+    _post_cache[media_id] = (time.time(), item)
+    return jsonify(item)
+
+
 @app.get("/search")
 def search():
-    if not SERVICE_TOKEN or request.headers.get("X-Service-Token") != SERVICE_TOKEN:
+    if not authorized():
         return jsonify({"error": "Unauthorized"}), 401
     query = " ".join((request.args.get("query") or "").split())
     words = tokens(query)
