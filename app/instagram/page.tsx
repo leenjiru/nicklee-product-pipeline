@@ -9,7 +9,7 @@ import { Card, CardContent } from "@/components/ui/card"
 
 interface InstagramPost { shortcode: string; permalink: string; caption: string; date: string; owner: string; source: string; images: string[]; isVideo: boolean; likes: number; views: number }
 
-const proxied = (url: string) => `/api/proxy-image?url=${encodeURIComponent(url)}`
+// Instagram's CDN refuses Vercel's servers but serves browsers directly (with CORS), so images load and download from there
 const compact = (n: number) => Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(n)
 const fileName = (query: string, post: InstagramPost, index: number) => `${query.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-") || "instagram"}-${post.shortcode}${post.images.length > 1 ? `-${index + 1}` : ""}.jpg`
 
@@ -20,6 +20,24 @@ function PostCard({ post, query }: { post: InstagramPost; query: string }) {
   const many = post.images.length > 1
   const step = (delta: number) => setIndex((i) => (i + delta + post.images.length) % post.images.length)
 
+  const [saving, setSaving] = useState(false)
+
+  async function save() {
+    setSaving(true)
+    try {
+      const response = await fetch(image)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const url = URL.createObjectURL(await response.blob())
+      const link = document.createElement("a")
+      link.href = url; link.download = fileName(query, post, index)
+      document.body.appendChild(link); link.click(); link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (err) {
+      console.error("Download failed:", err)
+      window.open(image, "_blank", "noopener")
+    } finally { setSaving(false) }
+  }
+
   async function copyCaption() {
     try { await navigator.clipboard.writeText(post.caption); setCopied(true); setTimeout(() => setCopied(false), 1500) } catch (err) { console.error("Copy failed:", err) }
   }
@@ -28,7 +46,7 @@ function PostCard({ post, query }: { post: InstagramPost; query: string }) {
     <Card className="overflow-hidden py-0">
       <CardContent className="p-0">
         <div className="group relative aspect-[3/4] overflow-hidden bg-muted">
-          <img src={proxied(image)} alt={post.caption.slice(0, 80) || "Instagram image"} className="h-full w-full object-cover" loading="lazy" onError={(e) => { e.currentTarget.src = "/placeholder.svg" }} />
+          <img src={image} referrerPolicy="no-referrer" alt={post.caption.slice(0, 80) || "Instagram image"} className="h-full w-full object-cover" loading="lazy" onError={(e) => { e.currentTarget.src = "/placeholder.svg" }} />
           <div className="absolute right-2 top-2 flex gap-1">
             {post.isVideo && <Badge className="bg-black/60 text-white"><Play className="h-3 w-3" />Video</Badge>}
             {many && <Badge className="bg-black/60 text-white"><Layers className="h-3 w-3" />{index + 1}/{post.images.length}</Badge>}
@@ -49,7 +67,7 @@ function PostCard({ post, query }: { post: InstagramPost; query: string }) {
           <p className="truncate text-sm font-medium">{post.owner ? `@${post.owner}` : post.source}</p>
           <p className="line-clamp-2 text-xs text-muted-foreground" title={post.caption}>{post.caption || "No caption"}</p>
           <div className="flex flex-wrap gap-1.5">
-            <a href={proxied(image)} download={fileName(query, post, index)}><Button variant="outline" size="sm" type="button" aria-label="Download image"><Download className="h-3.5 w-3.5" />Save</Button></a>
+            <Button variant="outline" size="sm" onClick={save} disabled={saving} aria-label="Download image">{saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}Save</Button>
             <Button variant="outline" size="sm" onClick={copyCaption} disabled={!post.caption} aria-label="Copy caption">{copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}</Button>
             <a href={post.permalink} target="_blank" rel="noreferrer"><Button variant="outline" size="sm" type="button" aria-label="Open post on Instagram"><ExternalLink className="h-3.5 w-3.5" /></Button></a>
           </div>

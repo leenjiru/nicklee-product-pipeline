@@ -3,7 +3,7 @@ Small Instaloader-backed service the Next.js app calls to find Instagram images.
 
 A query like "hp 840 g3" is run through Instagram's keyword search (the "For you" grid in the app,
 which matches posts from any account), then topped up with posts from matching hashtags (#hp840g3
-plus related tags Instagram suggests) and, optionally, a fixed list of profiles.
+and #840g3) and, optionally, a fixed list of profiles.
 
 Run it somewhere that can hold a long-lived process (a VPS, a home server) - not on Vercel.
 
@@ -14,7 +14,7 @@ Environment:
   IG_PASSWORD      only if you have no session file
   IG_PROFILES      optional comma-separated usernames whose recent posts are also scanned
   IG_SEARCH_PAGES  pages of keyword-search results read per query (default 3)
-  IG_MAX_TAGS      hashtags searched per query (default 3)
+  IG_MAX_TAGS      hashtags searched per query, built from the query words (default 3)
   IG_MAX_POSTS     posts read per hashtag/profile (default 24)
   TIME_BUDGET      seconds one search may spend talking to Instagram (default 40; the Next.js route waits 55)
   CACHE_SECONDS    how long identical searches are cached (default 1800) - keep this high, Instagram rate limits hard
@@ -136,7 +136,7 @@ def media_to_item(media: dict, source: str, words: list[str]) -> dict[str, Any] 
 
 
 def find_medias(node: Any) -> list[dict]:
-    """The search response nests posts in sections/layouts that Instagram reshuffles; collect every media dict."""
+    """Search and hashtag responses nest posts in sections/layouts that Instagram reshuffles; collect every media dict."""
     out: list[dict] = []
     if isinstance(node, dict):
         media = node.get("media")
@@ -151,36 +151,46 @@ def find_medias(node: Any) -> list[dict]:
     return out
 
 
+def add_medias(node: Any, source: str, words: list[str], found: dict[str, dict], limit: int | None = None) -> int:
+    """Add the posts in a response to `found`. A post can appear twice (a featured reel and a grid tile) and
+    only one copy carries the caption, so a later copy fills in a missing caption."""
+    added = 0
+    for media in find_medias(node):
+        item = media_to_item(media, source, words)
+        if not item:
+            continue
+        existing = found.get(item["shortcode"])
+        if existing:
+            if not existing["caption"] and item["caption"]:
+                existing.update(caption=item["caption"], score=item["score"])
+            continue
+        if limit is not None and added >= limit:
+            continue
+        found[item["shortcode"]] = item
+        added += 1
+    return added
+
+
 def keyword_search(query: str, words: list[str], found: dict[str, dict], deadline: float):
-    params: dict[str, Any] = {"query": query, "search_session_id": str(uuid.uuid4())}
+    # the mobile app's search; the website's api/v1/fbsearch/web/top_serp/ was removed in 2026
+    params: dict[str, Any] = {"query": query, "search_surface": "top_serp_page", "search_session_id": str(uuid.uuid4())}
     for _ in range(SEARCH_PAGES):
         if time.time() > deadline:
             raise OutOfTime()
-        data = L.context.get_json("api/v1/fbsearch/web/top_serp/", params)
-        for media in find_medias(data.get("media_grid", data)):
-            item = media_to_item(media, "search", words)
-            if item and item["shortcode"] not in found:
-                found[item["shortcode"]] = item
+        data = L.context.get_iphone_json("api/v1/fbsearch/top_serp/", params)
         grid = data.get("media_grid") or {}
-        if not grid.get("has_more") or not grid.get("next_max_id"):
+        add_medias(grid.get("sections", []), "search", words, found)
+        if not grid.get("has_more") or not grid.get("next_max_id") or len(found) >= MAX_RESULTS:
             break
-        params.update({"next_max_id": grid["next_max_id"], "rank_token": grid.get("rank_token", "")})
+        params.update({key: grid[key] for key in ("next_max_id", "rank_token", "reels_max_id", "reels_page_index") if key in grid})
 
 
 # --- hashtags and profiles (fallback / extra) --------------------------------------------------
 
-def candidate_tags(query: str, words: list[str]) -> list[str]:
+def candidate_tags(words: list[str]) -> list[str]:
     tags = ["".join(words)]
-    required = key_words(words)
-    try:
-        for tag in instaloader.TopSearchResults(L.context, query).get_hashtag_strings():
-            tag = tag.lower()
-            if all(w in tag for w in required) and tag not in tags:
-                tags.append(tag)
-    except (RateLimited, LoginRequired):
-        raise
-    except Exception as error:
-        print(f"Instagram top search failed: {error}", flush=True)
+    if len(words) > 2:
+        tags.append("".join(words[1:]))  # "hp 840 g3" -> also #840g3
     return tags[:MAX_TAGS]
 
 
@@ -211,28 +221,29 @@ def post_to_item(post: instaloader.Post, source: str, words: list[str]) -> dict[
     }
 
 
-def collect(posts, source: str, words: list[str], found: dict[str, dict], deadline: float, require_caption: bool):
+def collect(posts, source: str, words: list[str], found: dict[str, dict], deadline: float):
+    """Profile posts: keep only those whose caption mentions the product."""
     for post in islice(posts, MAX_POSTS):
         if time.time() > deadline:
             raise OutOfTime()
-        if post.shortcode in found:
-            continue
-        # posts from a matching hashtag are relevant already; posts from a profile must mention the product
-        if require_caption and not all(w in (post.caption or "").lower() for w in key_words(words)):
+        if post.shortcode in found or not all(w in (post.caption or "").lower() for w in key_words(words)):
             continue
         found[post.shortcode] = post_to_item(post, source, words)
 
 
-def hashtag_search(query: str, words: list[str], found: dict[str, dict], deadline: float, errors: list[str]) -> list[str]:
-    tags = candidate_tags(query, words)
+def hashtag_search(words: list[str], found: dict[str, dict], deadline: float, errors: list[str]) -> list[str]:
+    # read the tag page directly: Instaloader 4.15's Hashtag parser no longer matches Instagram's layout
+    tags = candidate_tags(words)
     for tag in tags:
+        if time.time() > deadline:
+            raise OutOfTime()
         try:
-            hashtag = instaloader.Hashtag.from_name(L.context, tag)
-            collect(hashtag.get_top_posts(), f"#{tag}", words, found, deadline, False)
-            collect(hashtag.get_posts_resumable(), f"#{tag}", words, found, deadline, False)
+            data = L.context.get_iphone_json("api/v1/tags/web_info/", {"tag_name": tag})
+            data = data.get("data", data)
+            add_medias([data.get("top"), data.get("recent")], f"#{tag}", words, found, MAX_POSTS)
         except instaloader.exceptions.QueryReturnedNotFoundException:
             continue  # nobody uses this tag
-        except (RateLimited, LoginRequired, OutOfTime):
+        except (RateLimited, LoginRequired):
             raise
         except Exception as error:
             errors.append(f"#{tag}: {error}")
@@ -276,11 +287,11 @@ def search():
                 print(f"Instagram keyword search failed: {error}", flush=True)
                 errors.append(f"Keyword search: {error}")
             if len(found) < MAX_RESULTS:
-                tags = hashtag_search(query, words, found, deadline, errors)
+                tags = hashtag_search(words, found, deadline, errors)
             for username in PROFILES:
                 try:
                     profile = instaloader.Profile.from_username(L.context, username)
-                    collect(profile.get_posts(), f"@{username}", words, found, deadline, True)
+                    collect(profile.get_posts(), f"@{username}", words, found, deadline)
                 except (RateLimited, LoginRequired, OutOfTime):
                     raise
                 except Exception as error:
