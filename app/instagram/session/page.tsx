@@ -62,7 +62,7 @@ export default function InstagramSessionPage() {
         <CardHeader><CardTitle className="text-lg">Accounts</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div className="flex gap-2">
-            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Admin password" aria-label="Admin password" autoComplete="current-password" />
+            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Site admin password (not your Instagram password)" aria-label="Site admin password" autoComplete="current-password" />
             <Button variant="outline" onClick={check} disabled={busy || !password}>Check</Button>
           </div>
           {status && (status.accounts.length === 0

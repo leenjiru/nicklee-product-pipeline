@@ -16,7 +16,7 @@ async function forward(request: NextRequest, init?: RequestInit) {
   if (!base || !token) return NextResponse.json({ error: "Instagram search isn't set up yet" }, { status: 503 })
   if (!allowed(request)) {
     await new Promise((resolve) => setTimeout(resolve, 1000)) // slow down password guessing
-    return NextResponse.json({ error: "Wrong password" }, { status: 401 })
+    return NextResponse.json({ error: "Wrong admin password. This is the site's own admin password (INSTAGRAM_ADMIN_PASSWORD), not an Instagram password." }, { status: 401 })
   }
   try {
     const response = await fetch(`${base}/session`, {
