@@ -116,7 +116,8 @@ def pick_account() -> bool:
 
 def logged_out(error: Exception) -> bool:
     text = str(error).lower()
-    return isinstance(error, LoginRequired) or "login_required" in text or "checkpoint" in text
+    # login_required: session expired; user_has_logged_out: someone pressed "Log out" in a browser with that account
+    return isinstance(error, LoginRequired) or any(m in text for m in ("login_required", "logged_out", "checkpoint"))
 
 
 def take_turn():
