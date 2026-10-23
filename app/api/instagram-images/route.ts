@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
     })
     const data = await response.json().catch(() => null)
     if (!response.ok || !data) return NextResponse.json({ error: data?.error || "Instagram service failed" }, { status: 502 })
-    return NextResponse.json({ query: data.query, posts: data.posts || [], errors: data.errors || [] })
+    return NextResponse.json({ query: data.query, posts: data.posts || [], errors: data.errors || [], loginNeeded: !!data.loginNeeded })
   } catch (error) {
     console.error("Instagram search error:", error)
     return NextResponse.json({ error: "Couldn't reach the Instagram service" }, { status: 502 })

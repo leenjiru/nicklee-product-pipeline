@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
       signal: AbortSignal.timeout(25000),
     })
     const data = await response.json().catch(() => null)
-    if (!response.ok || !data) return NextResponse.json({ error: data?.error || "Instagram service failed" }, { status: response.status === 429 ? 429 : 502 })
+    if (!response.ok || !data) return NextResponse.json({ error: data?.error || "Instagram service failed", loginNeeded: !!data?.loginNeeded }, { status: response.status === 429 ? 429 : 502 })
     return NextResponse.json(data)
   } catch (error) {
     console.error("Instagram post error:", error)

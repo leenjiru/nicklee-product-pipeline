@@ -9,9 +9,11 @@ Run it somewhere that can hold a long-lived process (a VPS, a home server) - not
 
 Environment:
   SERVICE_TOKEN    shared secret the Next.js app sends in the X-Service-Token header (required)
-  IG_USER          Instagram login used for the session (required in practice; search needs it)
-  IG_SESSIONFILE   path to a session file made with `instaloader --login=IG_USER` (preferred over a password)
-  IG_PASSWORD      only if you have no session file
+  IG_SESSIONFILE   a session file in the session folder; every `session-<username>` file there is loaded, so
+                   several spare accounts can be kept and the service moves to the next when one is logged out
+                   (add or refresh one with POST /session, which the site's /instagram/session page calls)
+  IG_USER          with IG_PASSWORD, a password login used only when the folder has no session files
+  IG_PASSWORD      see IG_USER
   IG_PROFILES      optional comma-separated usernames whose recent posts are also scanned
   IG_SEARCH_PAGES  pages of keyword-search results read per query (default 3)
   IG_MAX_TAGS      hashtags searched per query, built from the query words (default 3)
@@ -21,12 +23,14 @@ Environment:
 """
 import os
 import re
+import glob
 import time
 import threading
 import uuid
 from datetime import datetime, timezone
 from itertools import islice
 from typing import Any
+from urllib.parse import unquote
 
 import instaloader
 from flask import Flask, jsonify, request
@@ -63,27 +67,66 @@ class FailFastRateController(instaloader.RateController):
         time.sleep(secs)
 
 
-def make_loader() -> instaloader.Instaloader:
-    loader = instaloader.Instaloader(
+SESSION_DIR = os.path.dirname(os.environ.get("IG_SESSIONFILE", "")) or "/session"
+LOGIN_EXPIRED = "The Instagram login has expired - paste a new sessionid cookie on the site's /instagram/session page"
+
+_accounts: dict[str, instaloader.Instaloader] = {}  # username -> logged-in loader, preferred first
+_expired: set[str] = set()
+
+
+def new_loader() -> instaloader.Instaloader:
+    return instaloader.Instaloader(
         download_pictures=False, download_videos=False, download_video_thumbnails=False,
         download_geotags=False, download_comments=False, save_metadata=False,
         compress_json=False, quiet=True, max_connection_attempts=1,
         rate_controller=lambda ctx: FailFastRateController(ctx),
     )
-    user = os.environ.get("IG_USER")
-    if user:
-        session_file = os.environ.get("IG_SESSIONFILE")
+
+
+def load_accounts():
+    for path in sorted(glob.glob(os.path.join(SESSION_DIR, "session-*")), key=os.path.getmtime, reverse=True):
+        username = os.path.basename(path)[len("session-"):]
+        loader = new_loader()
         try:
-            if session_file:
-                loader.load_session_from_file(user, session_file)
-            elif os.environ.get("IG_PASSWORD"):
-                loader.login(user, os.environ["IG_PASSWORD"])
+            loader.load_session_from_file(username, path)
+            _accounts[username] = loader
+        except Exception as error:
+            print(f"Couldn't load {path}: {error}", flush=True)
+    user, password = os.environ.get("IG_USER"), os.environ.get("IG_PASSWORD")
+    if not _accounts and user and password:
+        loader = new_loader()
+        try:
+            loader.login(user, password)
+            _accounts[user] = loader
         except Exception as error:  # run anonymously rather than crash; search will then fail with a clear error
             print(f"Instagram login failed: {error}", flush=True)
-    return loader
 
 
-L = make_loader()
+def pick_account() -> bool:
+    """Point L at the first account that hasn't been logged out; False (and an anonymous L) if none is left."""
+    global L
+    for username, loader in _accounts.items():
+        if username not in _expired:
+            L = loader
+            return True
+    L = new_loader()
+    return False
+
+
+def logged_out(error: Exception) -> bool:
+    text = str(error).lower()
+    return isinstance(error, LoginRequired) or "login_required" in text or "checkpoint" in text
+
+
+def retire_current():
+    if L.context.username:
+        print(f"Instagram logged out @{L.context.username}", flush=True)
+        _expired.add(L.context.username)
+
+
+L = new_loader()
+load_accounts()
+pick_account()
 
 
 def tokens(query: str) -> list[str]:
@@ -252,6 +295,8 @@ def hashtag_search(words: list[str], found: dict[str, dict], deadline: float, er
         except (RateLimited, LoginRequired):
             raise
         except Exception as error:
+            if logged_out(error):
+                raise LoginRequired(str(error))
             errors.append(f"#{tag}: {error}")
         if len(found) >= MAX_RESULTS:
             break
@@ -262,9 +307,59 @@ def authorized() -> bool:
     return bool(SERVICE_TOKEN) and request.headers.get("X-Service-Token") == SERVICE_TOKEN
 
 
+def account_status() -> dict[str, Any]:
+    return {"active": L.context.username, "accounts": [{"username": u, "loggedOut": u in _expired} for u in _accounts]}
+
+
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "loggedIn": bool(L.context.username), "profiles": PROFILES})
+    return jsonify({"ok": True, "loggedIn": bool(L.context.username), "profiles": PROFILES, **account_status()})
+
+
+@app.get("/session")
+def session_status():
+    if not authorized():
+        return jsonify({"error": "Unauthorized"}), 401
+    return jsonify(account_status())
+
+
+@app.post("/session")
+def session_update():
+    """Add or refresh an account from a browser's sessionid cookie; it becomes the active one."""
+    if not authorized():
+        return jsonify({"error": "Unauthorized"}), 401
+    sessionid = unquote(str((request.get_json(silent=True) or {}).get("sessionid") or "").strip().strip('"'))
+    if not re.fullmatch(r"\d+:[A-Za-z0-9_\-:%.]{8,}", sessionid):
+        return jsonify({"error": "That doesn't look like a sessionid cookie (it starts with numbers and a colon)"}), 400
+
+    loader = new_loader()
+    jar = loader.context._session.cookies
+    jar.set("sessionid", sessionid, domain=".instagram.com")
+    jar.set("ds_user_id", sessionid.split(":")[0], domain=".instagram.com")
+    username = None
+    try:
+        me = loader.context.get_iphone_json("api/v1/accounts/current_user/", {"edit": "true"})
+        username = (me.get("user") or {}).get("username")
+    except Exception as error:
+        print(f"current_user check failed, trying test_login: {error}", flush=True)
+    if not username:
+        try:
+            username = loader.test_login()  # the web check; None for a dead cookie
+        except Exception as error:
+            print(f"test_login failed: {error}", flush=True)
+    if not username:
+        return jsonify({"error": "Instagram didn't accept that cookie. Log in again in the browser, copy sessionid fresh, and don't log out afterwards"}), 400
+
+    loader.context.username = username
+    with _lock:
+        loader.save_session_to_file(os.path.join(SESSION_DIR, f"session-{username}"))
+        others = {u: l for u, l in _accounts.items() if u != username}
+        _accounts.clear()
+        _accounts.update({username: loader, **others})  # newest first
+        _expired.discard(username)
+        pick_account()
+    print(f"Instagram session updated for @{username}", flush=True)
+    return jsonify({"ok": True, "username": username, **account_status()})
 
 
 @app.get("/post")
@@ -275,26 +370,65 @@ def post_details():
     media_id = (request.args.get("id") or "").strip()
     if not media_id.isdigit():
         return jsonify({"error": "id is required"}), 400
-    if not L.context.username:
-        return jsonify({"error": "The Instagram service isn't logged in - check IG_USER / IG_SESSIONFILE"}), 503
-
     cached = _post_cache.get(media_id)
     if cached and time.time() - cached[0] < CACHE_SECONDS:
         return jsonify(cached[1])
     with _lock:
-        try:
-            data = L.context.get_iphone_json(f"api/v1/media/{media_id}/info/", {})
-            item = media_to_item((data.get("items") or [{}])[0], "post", [])
-        except RateLimited:
-            return jsonify({"error": "Instagram rate limit reached, try again in a while"}), 429
-        except LoginRequired:
-            return jsonify({"error": "The Instagram session has expired - log in again and restart the service"}), 503
-        except Exception as error:
-            return jsonify({"error": f"Couldn't load the post: {error}"}), 502
+        while True:
+            if not L.context.username:
+                return jsonify({"error": LOGIN_EXPIRED, "loginNeeded": True}), 503
+            try:
+                data = L.context.get_iphone_json(f"api/v1/media/{media_id}/info/", {})
+                item = media_to_item((data.get("items") or [{}])[0], "post", [])
+                break
+            except RateLimited:
+                return jsonify({"error": "Instagram rate limit reached, try again in a while"}), 429
+            except Exception as error:
+                if not logged_out(error):
+                    return jsonify({"error": f"Couldn't load the post: {error}"}), 502
+                retire_current()
+                pick_account()  # try the next account, if there is one
     if not item:
         return jsonify({"error": "The post has no photos"}), 404
     _post_cache[media_id] = (time.time(), item)
     return jsonify(item)
+
+
+def run_search(query: str, words: list[str]) -> tuple[dict[str, dict], list[str], list[str], bool]:
+    """One pass over keyword search, hashtags and profiles; the last value is True if Instagram logged us out."""
+    found: dict[str, dict] = {}
+    errors: list[str] = []
+    tags: list[str] = []
+    deadline = time.time() + TIME_BUDGET
+    try:
+        try:
+            keyword_search(query, words, found, deadline)
+        except (RateLimited, LoginRequired, OutOfTime):
+            raise
+        except Exception as error:
+            if logged_out(error):
+                raise LoginRequired(str(error))
+            print(f"Instagram keyword search failed: {error}", flush=True)
+            errors.append(f"Keyword search: {error}")
+        if len(found) < MAX_RESULTS:
+            tags = hashtag_search(words, found, deadline, errors)
+        for username in PROFILES:
+            try:
+                profile = instaloader.Profile.from_username(L.context, username)
+                collect(profile.get_posts(), f"@{username}", words, found, deadline)
+            except (RateLimited, LoginRequired, OutOfTime):
+                raise
+            except Exception as error:
+                if logged_out(error):
+                    raise LoginRequired(str(error))
+                errors.append(f"@{username}: {error}")
+    except RateLimited:
+        errors.append("Instagram rate limit reached - showing what was found so far, try again in a while")
+    except LoginRequired:
+        return found, errors, tags, True
+    except OutOfTime:
+        pass  # return what we have; a repeat search is served from the cache
+    return found, errors, tags, False
 
 
 @app.get("/search")
@@ -305,43 +439,20 @@ def search():
     words = tokens(query)
     if not words:
         return jsonify({"error": "query is required"}), 400
-    if not L.context.username:
-        return jsonify({"error": "The Instagram service isn't logged in - check IG_USER / IG_SESSIONFILE"}), 503
-
     key = " ".join(words)
     cached = _cache.get(key)
     if cached and time.time() - cached[0] < CACHE_SECONDS:
         return jsonify({**cached[1], "cached": True})
 
-    found: dict[str, dict] = {}
-    errors: list[str] = []
-    tags: list[str] = []
     with _lock:
-        deadline = time.time() + TIME_BUDGET
-        try:
-            try:
-                keyword_search(query, words, found, deadline)
-            except (RateLimited, LoginRequired, OutOfTime):
-                raise
-            except Exception as error:
-                print(f"Instagram keyword search failed: {error}", flush=True)
-                errors.append(f"Keyword search: {error}")
-            if len(found) < MAX_RESULTS:
-                tags = hashtag_search(words, found, deadline, errors)
-            for username in PROFILES:
-                try:
-                    profile = instaloader.Profile.from_username(L.context, username)
-                    collect(profile.get_posts(), f"@{username}", words, found, deadline)
-                except (RateLimited, LoginRequired, OutOfTime):
-                    raise
-                except Exception as error:
-                    errors.append(f"@{username}: {error}")
-        except RateLimited:
-            errors.append("Instagram rate limit reached - showing what was found so far, try again in a while")
-        except LoginRequired:
-            errors.append("The Instagram session has expired - log in again and restart the service")
-        except OutOfTime:
-            pass  # return what we have; a repeat search is served from the cache
+        while True:
+            if not L.context.username:
+                return jsonify({"query": query, "tags": [], "posts": [], "errors": [LOGIN_EXPIRED], "loginNeeded": True})
+            found, errors, tags, expired = run_search(query, words)
+            if not expired:
+                break
+            retire_current()
+            pick_account()  # the next account starts the search over; with none left the loop reports it
 
     if found:
         errors = [e for e in errors if not e.startswith("Keyword search:")]  # hashtags covered for it

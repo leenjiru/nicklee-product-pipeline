@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import Link from "next/link"
 import { Check, ChevronLeft, ChevronRight, Copy, Download, Eye, ExternalLink, Heart, Instagram, Layers, Loader2, Play, Search, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -205,17 +206,19 @@ export default function InstagramPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notes, setNotes] = useState<string[]>([])
+  const [loginNeeded, setLoginNeeded] = useState(false)
   const open = posts.find((post) => post.shortcode === openId)
 
   async function search() {
     const q = query.trim()
     if (!q) return
-    setLoading(true); setError(null); setNotes([]); setPosts([]); setOpenId(null)
+    setLoading(true); setError(null); setNotes([]); setPosts([]); setOpenId(null); setLoginNeeded(false)
     try {
       const response = await fetch(`/api/instagram-images?query=${encodeURIComponent(q)}`)
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || "Instagram search failed")
-      setPosts(data.posts || []); setNotes(data.errors || []); setSearchedFor(q)
+      setPosts(data.posts || []); setSearchedFor(q)
+      setLoginNeeded(!!data.loginNeeded); setNotes(data.loginNeeded ? [] : data.errors || [])
     } catch (err) { setError(err instanceof Error ? err.message : "Instagram search failed") } finally { setLoading(false) }
   }
 
@@ -232,6 +235,12 @@ export default function InstagramPage() {
         {loading && <p className="mt-4 text-sm text-muted-foreground">Searching Instagram, this can take up to a minute...</p>}
       </div>
       {error && <p className="mx-auto mt-8 max-w-3xl rounded-lg bg-destructive/10 p-4 text-center text-destructive">{error}</p>}
+      {loginNeeded && (
+        <div className="mx-auto mt-8 max-w-3xl rounded-lg bg-amber-50 p-4 text-center text-amber-900 dark:bg-amber-900/20 dark:text-amber-200">
+          <p className="font-medium">Instagram has logged the search account out.</p>
+          <p className="mt-1 text-sm">Paste a fresh login cookie and search works again: <Link href="/instagram/session" className="font-semibold underline">Update Instagram login</Link></p>
+        </div>
+      )}
       {notes.length > 0 && <p className="mx-auto mt-8 max-w-3xl rounded-lg bg-amber-50 p-3 text-center text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">{notes.join(" · ")}</p>}
 
       {posts.length > 0 && (
@@ -242,7 +251,7 @@ export default function InstagramPage() {
           </div>
         </div>
       )}
-      {!loading && searchedFor && posts.length === 0 && !error && <p className="mt-16 text-center text-muted-foreground">No Instagram posts found. Try a shorter search.</p>}
+      {!loading && searchedFor && posts.length === 0 && !error && !loginNeeded && <p className="mt-16 text-center text-muted-foreground">No Instagram posts found. Try a shorter search.</p>}
 
       {open && <PostViewer key={open.shortcode} post={open} query={searchedFor} onClose={() => setOpenId(null)} onLoaded={(full) => setPosts((list) => list.map((p) => (p.shortcode === full.shortcode ? full : p)))} />}
     </main>
