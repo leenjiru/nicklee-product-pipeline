@@ -10,7 +10,7 @@ Run it somewhere that can hold a long-lived process (a VPS, a home server) - not
 Environment:
   SERVICE_TOKEN    shared secret the Next.js app sends in the X-Service-Token header (required)
   IG_SESSIONFILE   a session file in the session folder; every `session-<username>` file there is loaded, so
-                   several spare accounts can be kept and the service moves to the next when one is logged out
+                   several spare accounts can be kept; they take turns per search and the rest cover when one is logged out
                    (add or refresh one with POST /session, which the site's /instagram/session page calls)
   IG_USER          with IG_PASSWORD, a password login used only when the folder has no session files
   IG_PASSWORD      see IG_USER
@@ -72,6 +72,7 @@ LOGIN_EXPIRED = "The Instagram login has expired - paste a new sessionid cookie 
 
 _accounts: dict[str, instaloader.Instaloader] = {}  # username -> logged-in loader, preferred first
 _expired: set[str] = set()
+_turn = 0  # round-robin position, so the accounts share the load
 
 
 def new_loader() -> instaloader.Instaloader:
@@ -116,6 +117,17 @@ def pick_account() -> bool:
 def logged_out(error: Exception) -> bool:
     text = str(error).lower()
     return isinstance(error, LoginRequired) or "login_required" in text or "checkpoint" in text
+
+
+def take_turn():
+    """Point L at the next working account in rotation (call once per fresh search or post lookup)."""
+    global L, _turn
+    working = [loader for username, loader in _accounts.items() if username not in _expired]
+    if working:
+        L = working[_turn % len(working)]
+        _turn += 1
+    else:
+        pick_account()
 
 
 def retire_current():
@@ -308,7 +320,7 @@ def authorized() -> bool:
 
 
 def account_status() -> dict[str, Any]:
-    return {"active": L.context.username, "accounts": [{"username": u, "loggedOut": u in _expired} for u in _accounts]}
+    return {"active": L.context.username, "accounts": [{"username": u, "loggedOut": u in _expired} for u in _accounts]}  # active = used last
 
 
 @app.get("/health")
@@ -374,6 +386,7 @@ def post_details():
     if cached and time.time() - cached[0] < CACHE_SECONDS:
         return jsonify(cached[1])
     with _lock:
+        take_turn()
         while True:
             if not L.context.username:
                 return jsonify({"error": LOGIN_EXPIRED, "loginNeeded": True}), 503
@@ -445,6 +458,7 @@ def search():
         return jsonify({**cached[1], "cached": True})
 
     with _lock:
+        take_turn()
         while True:
             if not L.context.username:
                 return jsonify({"query": query, "tags": [], "posts": [], "errors": [LOGIN_EXPIRED], "loginNeeded": True})

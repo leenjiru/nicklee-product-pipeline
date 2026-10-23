@@ -55,7 +55,7 @@ export default function InstagramSessionPage() {
       <div className="pt-8 text-center">
         <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-yellow-400 via-pink-500 to-purple-600 text-white"><KeyRound /></div>
         <h1 className="text-3xl font-bold tracking-tight">Instagram login</h1>
-        <p className="mt-3 text-muted-foreground">When Instagram logs the search account out, paste a fresh <code>sessionid</code> cookie here. Add a second spare account too, and search switches to it automatically when one is logged out.</p>
+        <p className="mt-3 text-muted-foreground">Paste a <code>sessionid</code> cookie for each spare Instagram account. Every account you add joins the list, and they take turns doing searches. When Instagram logs one out, the others carry on: paste a fresh cookie for it here.</p>
       </div>
 
       <Card className="mt-8">
@@ -71,14 +71,14 @@ export default function InstagramSessionPage() {
                 <li key={a.username} className="flex items-center gap-2 text-sm">
                   {a.loggedOut ? <XCircle className="h-4 w-4 text-destructive" /> : <CheckCircle2 className="h-4 w-4 text-green-600" />}
                   <span className="font-medium">@{a.username}</span>
-                  <span className="text-muted-foreground">{a.loggedOut ? "logged out - paste a new cookie" : a.username === status.active ? "in use" : "standby"}</span>
+                  <span className="text-muted-foreground">{a.loggedOut ? "logged out - paste a new cookie" : a.username === status.active ? "working (used last)" : "working"}</span>
                 </li>
               ))}</ul>)}
         </CardContent>
       </Card>
 
       <Card className="mt-6">
-        <CardHeader><CardTitle className="text-lg">Paste a new cookie</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-lg">Add or refresh an account</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <ol className="list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
             <li>On a computer, open <strong>instagram.com</strong> and log in to the spare account (not your main one).</li>
