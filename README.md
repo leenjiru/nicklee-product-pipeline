@@ -4,7 +4,7 @@ Product research tool for [nicklee.co.ke](https://nicklee.co.ke), live at [nickl
 It finds phone and laptop specs, product images and descriptions, and compares phones, so products can be listed
 on the shop quickly.
 
-- **Phone search and comparison** (`/`, `/compare`): specs from GSMArena and Avechi, scored across performance,
+- **Phone search and comparison** (`/`, `/compare`): specs from GSMArena and other sites, scored across performance,
   camera, battery, display, storage and extras (`lib/phone-scoring.ts`).
 - **Net images and laptops** (`/images`, `/laptops`): product images, details and a copyable description.
 - **Instagram images** (`/instagram`): image search backed by `instagram-service/` (see below).
