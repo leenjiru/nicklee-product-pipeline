@@ -1,8 +1,20 @@
-# phone-specs-site
+# nicklee-product-pipeline
 
-Product research tool for [nicklee.co.ke](https://nicklee.co.ke), live at [nickleecoke.vercel.app](https://nickleecoke.vercel.app).
-It finds phone and laptop specs, product images and descriptions, and compares phones, so products can be listed
-on the shop quickly.
+The tools behind product listing on [nicklee.co.ke](https://nicklee.co.ke), a Kenyan electronics shop. An AI agent takes
+"post Galaxy A16 at 18,500", finds the specs and photos, cleans the image and publishes the product live, work that was
+previously done by hand. The research site is live at [nickleecoke.vercel.app](https://nickleecoke.vercel.app).
+
+![Phone comparison: three phones scored across six weighted categories](docs/compare.jpg)
+
+## Architecture
+
+1. **Research site** (this repo, Next.js on Vercel): spec search, phone scoring, image search, server-side image proxy.
+2. **bg-service** (Python, Docker on a VPS): background removal with InSPyReNet, returns a white 1000×1000 product image.
+3. **ig-service** (Python, Docker on the same VPS): Instagram image search through a rotating pool of logged-in accounts.
+4. **Catalog API** (the shop's Laravel backend): creates products and sets prices and stock, logging every change.
+5. **The agent** (Claude with a written skill): uses 1–3 to find and clean the photo, 4 to publish it, then checks the live page.
+
+## What's in this repo
 
 - **Phone search and comparison** (`/`, `/compare`): specs from GSMArena and other sites, scored across performance,
   camera, battery, display, storage and extras (`lib/phone-scoring.ts`).
