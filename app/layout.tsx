@@ -9,7 +9,6 @@ import { Suspense } from "react"
 export const metadata: Metadata = {
   title: "Phone Specs Finder",
   description: "Search phone specifications and product images from Avechi.",
-  generator: "v0.app",
 }
 
 const geistSans = Geist({ subsets: ["latin"] })
